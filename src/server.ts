@@ -18,7 +18,12 @@ import inquiriesRoutes from './modules/inquiries/inquiries.routes';
 
 const app = express();
 
-app.use(helmet());
+// LiteSpeed/cPanel sits in front of this app and sets X-Forwarded-For.
+// Trust exactly one hop so express-rate-limit sees the real client IP
+// (and stops rejecting requests with ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+app.set('trust proxy', 1);
+
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: env.corsOrigin, credentials: true }));
 app.use(express.json({ limit: '2mb' }));
 app.use(
@@ -32,6 +37,8 @@ app.use(
 
 app.get('/api/health', (_req, res) => res.json({ success: true, status: 'ok', time: new Date().toISOString() }));
 
+app.get('/api/deploy-marker', (_req, res) => res.json({ marker: 'corp-deploy-v2' }));
+
 app.use('/api/auth', authRoutes);
 app.use('/api', videosRoutes);
 app.use('/api/tasks', tasksRoutes);
@@ -40,6 +47,7 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/inquiries', inquiriesRoutes);
+app.use('/api/inquiry', inquiriesRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
@@ -49,7 +57,7 @@ async function start() {
   app.listen(env.port, () => logger.info(`Server running on :${env.port}`));
 }
 
-if (require.main === module) {
+if (!process.env.VITEST) {
   start();
 }
 

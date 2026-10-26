@@ -1,0 +1,47 @@
+name: Deploy backend to cPanel
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck & lint
+        run: |
+          npm run typecheck
+          npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack deploy artifact
+        run: |
+          rm -rf pkg deploy.tgz
+          mkdir -p pkg
+          cp package.json package-lock.json pkg/
+          cp -r dist pkg/
+          tar -czf deploy.tgz -C pkg .
+
+      - name: Deploy via cPanel API
+        env:
+          CPANEL_SSO_EMAIL: ${{ secrets.CPANEL_SSO_EMAIL }}
+          CPANEL_SSO_PASSWORD: ${{ secrets.CPANEL_SSO_PASSWORD }}
+        run: bash scripts/cpanel-deploy.sh
