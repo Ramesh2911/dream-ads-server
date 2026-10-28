@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import { execSync } from 'child_process';
 import { env } from './config/env';
 import { connectDB } from './config/database';
 import { errorHandler, notFound } from './middleware/error';
@@ -37,7 +38,41 @@ app.use(
 
 app.get('/api/health', (_req, res) => res.json({ success: true, status: 'ok', time: new Date().toISOString() }));
 
-app.get('/api/deploy-marker', (_req, res) => res.json({ marker: 'corp-deploy-v2' }));
+app.get('/api/deploy-marker', (_req, res) => res.json({ marker: 'corp-deploy-v3' }));
+
+// CI-triggered worker restart: after Fileman uploads, GitHub Actions calls this
+// so the supervisor respawns lsnode with the fresh code (no WHMCS/CGI needed).
+const RESTART_KEY = process.env.RESTART_KEY || 'da-restart-7f3a9b2e';
+app.post('/api/internal/restart', (req, res) => {
+  if (req.headers['x-restart-key'] !== RESTART_KEY) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const target = String(req.body?.app || req.query?.app || '');
+  if (!['website', 'backend'].includes(target)) {
+    return res.status(400).json({ error: 'app must be website|backend' });
+  }
+  const appDir = `/home/dreamads/${target}/`;
+  const install = req.body?.install === true || req.query?.install === '1';
+  logger.info(`restart requested for ${target} install=${install}`);
+  try {
+    if (install) {
+      execSync(`cd ${appDir} && npm install --omit=dev --no-audit --no-fund`, { timeout: 180000 });
+    }
+    // bracket trick: regex [l]snode matches lsnode but our own cmdline has
+    // literal [l]snode so pkill never kills the caller mid-request
+    execSync(`pkill -9 -f '[l]snode.*${appDir}' || true`, { timeout: 5000 });
+  } catch (e) {
+    logger.error(`restart/install failed for ${target}: ${e}`);
+  }
+  if (target === 'backend') {
+    // respond, then die so supervisor restarts us with the new dist
+    setTimeout(() => {
+      try { process.kill(process.pid, 'SIGKILL'); } catch { /* already gone */ }
+      process.exit(0);
+    }, 250);
+  }
+  return res.json({ success: true, restarted: target, install });
+});
 
 app.use('/api/auth', authRoutes);
 app.use('/api', videosRoutes);

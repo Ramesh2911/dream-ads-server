@@ -51,6 +51,7 @@ router.post(
       referralCode: makeReferralCode(),
       referredBy,
       isAgeVerified: data.dob ? true : false,
+      termsAcceptedAt: data.acceptTerms ? new Date() : undefined,
     });
 
     await Wallet.create([
@@ -130,6 +131,23 @@ router.put(
     const data = schema.parse(req.body);
     const user = await User.findByIdAndUpdate(req.user!._id, data, { new: true });
     res.json({ success: true, data: { id: user!._id, name: user!.name, avatar: user!.avatar } });
+  })
+);
+
+router.post(
+  '/delete-request',
+  requireUserAuth,
+  asyncHandler(async (req: Request, res) => {
+    const user = await User.findById(req.user!._id);
+    if (!user) throw new ApiError(404, 'User not found');
+    if (user.status === 'pending_delete') {
+      res.json({ success: true, message: 'Deletion request already pending review' });
+      return;
+    }
+    if (user.status !== 'active') throw new ApiError(400, 'Only active accounts can request deletion');
+    user.status = 'pending_delete';
+    await user.save();
+    res.json({ success: true, message: 'Account deletion requested. An admin will review it.' });
   })
 );
 

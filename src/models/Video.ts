@@ -15,6 +15,7 @@ export interface IVideo extends Document {
   isTrending: boolean;
   views: number;
   likes: number;
+  shares: number;
   createdBy: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
@@ -35,6 +36,7 @@ const videoSchema = new Schema<IVideo>(
     isTrending: { type: Boolean, default: false },
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
+    shares: { type: Number, default: 0 },
     createdBy: { type: Schema.Types.ObjectId, ref: 'AdminUser' },
   },
   { timestamps: true }

@@ -32,16 +32,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Pack deploy artifact
-        run: |
-          rm -rf pkg deploy.tgz
-          mkdir -p pkg
-          cp package.json package-lock.json pkg/
-          cp -r dist pkg/
-          tar -czf deploy.tgz -C pkg .
-
       - name: Deploy via cPanel API
         env:
-          CPANEL_SSO_EMAIL: ${{ secrets.CPANEL_SSO_EMAIL }}
-          CPANEL_SSO_PASSWORD: ${{ secrets.CPANEL_SSO_PASSWORD }}
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+          RESTART_KEY: da-restart-7f3a9b2e
         run: bash scripts/cpanel-deploy.sh

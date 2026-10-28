@@ -6,6 +6,7 @@ export interface ITaskSubmission extends Document {
   user: mongoose.Types.ObjectId;
   proofUrl?: string;
   proofText?: string;
+  proofFile?: string;
   status: 'pending' | 'approved' | 'rejected';
   rejectionReason?: string;
   reviewedBy?: mongoose.Types.ObjectId;
@@ -20,6 +21,7 @@ const taskSubmissionSchema = new Schema<ITaskSubmission>(
     user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     proofUrl: String,
     proofText: String,
+    proofFile: String,
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
     rejectionReason: String,
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'AdminUser' },

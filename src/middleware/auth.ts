@@ -45,6 +45,21 @@ export const requireUserAuth = asyncHandler(async (req: Request, _res: Response,
   }
 });
 
+/** Attach req.user when a valid Bearer token is present; never fails the request. */
+export async function optionalUserAuth(req: Request, _res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return next();
+  try {
+    const payload = jwt.verify(header.slice(7), env.jwtAccessSecret) as jwt.JwtPayload;
+    if (payload.type !== 'access') return next();
+    const user = await User.findById(payload.sub);
+    if (user && user.status === 'active') req.user = user;
+  } catch {
+    /* ignore — public access */
+  }
+  next();
+}
+
 export const requireAdminAuth = asyncHandler(async (req: Request, _res: Response, next: NextFunction) => {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) throw new ApiError(401, 'Authentication required');

@@ -12,6 +12,7 @@ export interface IUser extends Document {
   referredBy?: mongoose.Types.ObjectId;
   status: 'active' | 'suspended' | 'banned' | 'pending_delete' | 'deleted';
   isAgeVerified: boolean;
+  termsAcceptedAt?: Date;
   kycStatus: 'none' | 'pending' | 'verified' | 'rejected';
   kycDocuments?: { type: string; url: string; status: string; reason?: string }[];
   fcmToken?: string;
@@ -31,6 +32,7 @@ const userSchema = new Schema<IUser>(
     referredBy: { type: Schema.Types.ObjectId, ref: 'User' },
     status: { type: String, enum: ['active', 'suspended', 'banned', 'pending_delete', 'deleted'], default: 'active' },
     isAgeVerified: { type: Boolean, default: false },
+    termsAcceptedAt: { type: Date },
     kycStatus: { type: String, enum: ['none', 'pending', 'verified', 'rejected'], default: 'none' },
     kycDocuments: [{ type: String, url: String, status: String, reason: String }],
     fcmToken: { type: String },
