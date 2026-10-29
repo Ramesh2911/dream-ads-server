@@ -2039,8 +2039,9 @@ router.get(
       })
       .parse(req.query);
 
-    const ledgerFilter = { 'data.broadcast': true };
-    const [items, total, usersTotal] = await Promise.all([
+    // ledger doc = the only broadcast doc WITHOUT a user (fan-out copies do have one)
+    const ledgerFilter = { 'data.broadcast': true, user: { $exists: false } };
+    const [items, total, usersTotal, recipientsAgg] = await Promise.all([
       Notification.find(ledgerFilter)
         .sort({ createdAt: -1 })
         .skip((q.page - 1) * q.limit)
@@ -2049,11 +2050,10 @@ router.get(
         .lean(),
       Notification.countDocuments(ledgerFilter),
       User.countDocuments({ status: { $ne: 'deleted' } }),
-    ]);
-    const delivered = await Notification.countDocuments({ 'data.broadcast': true });
-    const recipientsAgg = await Notification.aggregate([
-      { $match: { 'data.broadcast': true } },
-      { $group: { _id: null, sum: { $sum: { $ifNull: ['$data.recipients', 0] } } } },
+      Notification.aggregate([
+        { $match: ledgerFilter },
+        { $group: { _id: null, sum: { $sum: { $ifNull: ['$data.recipients', 0] } } } },
+      ]),
     ]);
 
     res.json({
@@ -2066,7 +2066,6 @@ router.get(
         stats: {
           broadcasts: total,
           delivered: recipientsAgg[0]?.sum ?? 0,
-          ledgerDocs: delivered,
           recipients: usersTotal,
         },
       },
