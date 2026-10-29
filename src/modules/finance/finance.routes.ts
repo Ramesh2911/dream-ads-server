@@ -29,9 +29,31 @@ router.post(
         amount: z.number().min(MIN_WITHDRAWAL),
         wallet: z.enum(['video', 'social']),
         method: z.enum(['upi', 'bank', 'paytm']),
-        destination: z.string().min(3),
+        destination: z.string().trim().min(3).optional(),
+        accountNo: z.string().trim().min(6).max(25).regex(/^[A-Za-z0-9]+$/, 'Invalid account number').optional(),
+        ifsc: z
+          .string()
+          .trim()
+          .toUpperCase()
+          .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid IFSC code')
+          .optional(),
+        bankName: z.string().trim().min(2).max(60).optional(),
+      })
+      .superRefine((v, ctx) => {
+        if (v.method === 'bank') {
+          if (!v.accountNo) ctx.addIssue({ code: 'custom', path: ['accountNo'], message: 'Account number is required' });
+          if (!v.ifsc) ctx.addIssue({ code: 'custom', path: ['ifsc'], message: 'IFSC code is required' });
+          if (!v.bankName) ctx.addIssue({ code: 'custom', path: ['bankName'], message: 'Bank name is required' });
+        } else if (!v.destination) {
+          ctx.addIssue({ code: 'custom', path: ['destination'], message: 'Destination is required' });
+        }
       })
       .parse(req.body);
+
+    const isBank = data.method === 'bank';
+    // bank payouts: compose the destination server-side so the admin sees one
+    // consistent string while structured fields stay queryable
+    const destination = isBank ? `A/C ${data.accountNo} · IFSC ${data.ifsc} · ${data.bankName}` : data.destination!;
 
     const balances = await getBalances(req.user!._id);
     if (balances[data.wallet] < data.amount) throw new ApiError(400, 'Insufficient balance');
@@ -48,7 +70,14 @@ router.post(
       note: `Withdrawal request via ${data.method}`,
     });
 
-    const withdrawal = await Withdrawal.create({ ...data, user: req.user!._id });
+    const withdrawal = await Withdrawal.create({
+      amount: data.amount,
+      wallet: data.wallet,
+      method: data.method,
+      destination,
+      ...(isBank ? { accountNo: data.accountNo, ifsc: data.ifsc, bankName: data.bankName } : {}),
+      user: req.user!._id,
+    });
     res.status(201).json({ success: true, data: { withdrawal, balance } });
   })
 );

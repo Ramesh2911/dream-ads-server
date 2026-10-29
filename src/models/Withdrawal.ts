@@ -7,6 +7,9 @@ export interface IWithdrawal extends Document {
   wallet: 'video' | 'social';
   method: 'upi' | 'bank' | 'paytm';
   destination: string;
+  accountNo?: string;
+  ifsc?: string;
+  bankName?: string;
   status: 'pending' | 'approved' | 'rejected' | 'paid';
   rejectionReason?: string;
   paymentRef?: string;
@@ -23,6 +26,9 @@ const withdrawalSchema = new Schema<IWithdrawal>(
     wallet: { type: String, enum: ['video', 'social'], required: true },
     method: { type: String, enum: ['upi', 'bank', 'paytm'], required: true },
     destination: { type: String, required: true },
+    accountNo: { type: String, trim: true },
+    ifsc: { type: String, trim: true },
+    bankName: { type: String, trim: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'paid'], default: 'pending' },
     rejectionReason: String,
     paymentRef: String,
