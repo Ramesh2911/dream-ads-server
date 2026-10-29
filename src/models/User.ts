@@ -8,6 +8,8 @@ export interface IUser extends Document {
   name: string;
   dob?: Date;
   avatar?: string;
+  aadharFront?: string;
+  aadharBack?: string;
   referralCode: string;
   referredBy?: mongoose.Types.ObjectId;
   status: 'active' | 'suspended' | 'banned' | 'pending_delete' | 'deleted';
@@ -28,6 +30,8 @@ const userSchema = new Schema<IUser>(
     password: { type: String, required: true },    name: { type: String, required: true, trim: true },
     dob: { type: Date },
     avatar: { type: String },
+    aadharFront: { type: String },
+    aadharBack: { type: String },
     referralCode: { type: String, unique: true, required: true },
     referredBy: { type: Schema.Types.ObjectId, ref: 'User' },
     status: { type: String, enum: ['active', 'suspended', 'banned', 'pending_delete', 'deleted'], default: 'active' },

@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import path from 'path';
+import { env } from '../../config/env';
 import { User } from '../../models/User';
 import { AdminUser } from '../../models/AdminUser';
 import { Role, Permission, ALL_PERMISSIONS } from '../../models/Role';
@@ -213,6 +216,91 @@ router.get(
     const counts: Record<string, number> = { active: 0, suspended: 0, banned: 0, pending_delete: 0 };
     for (const row of statusCounts as Array<{ _id: string; count: number }>) counts[row._id] = row.count;
     res.json({ success: true, data: { users, total, counts, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  })
+);
+
+// ---- KYC review (registered BEFORE /users/:id so 'kyc' is not parsed as an id) ----
+const profileRoot = path.resolve(env.uploadDir, 'profile');
+const KYC_FILE_MIME: Record<string, string> = { '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' };
+
+router.get(
+  '/users/kyc',
+  requireAdminAuth,
+  requirePermission('users.read'),
+  asyncHandler(async (req, res) => {
+    const { status, search, page = 1, limit = 20 } = req.query;
+    const and: Record<string, unknown>[] = [];
+    if (status) and.push({ kycStatus: status });
+    else
+      and.push({
+        $or: [
+          { aadharFront: { $exists: true, $ne: null } },
+          { aadharBack: { $exists: true, $ne: null } },
+          { kycStatus: { $ne: 'none' } },
+        ],
+      });
+    if (search) {
+      and.push({
+        $or: [
+          { name: { $regex: String(search), $options: 'i' } },
+          { email: { $regex: String(search), $options: 'i' } },
+          { mobile: { $regex: String(search), $options: 'i' } },
+        ],
+      });
+    }
+    const filter = and.length ? { $and: and } : {};
+    const skip = (Number(page) - 1) * Number(limit);
+    const [users, total, kycCounts] = await Promise.all([
+      User.find(filter)
+        .select('name email mobile dob referralCode status kycStatus avatar aadharFront aadharBack createdAt')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      User.countDocuments(filter),
+      User.aggregate([{ $group: { _id: '$kycStatus', count: { $sum: 1 } } }]),
+    ]);
+    const counts: Record<string, number> = { none: 0, pending: 0, verified: 0, rejected: 0 };
+    for (const row of kycCounts as Array<{ _id: string; count: number }>) counts[row._id] = row.count;
+    res.json({ success: true, data: { users, total, counts, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  })
+);
+
+router.get(
+  '/users/:id/kyc-doc/:kind',
+  requireAdminAuth,
+  requirePermission('users.read'),
+  asyncHandler(async (req, res) => {
+    const kind = req.params.kind;
+    if (kind !== 'aadharFront' && kind !== 'aadharBack') throw new ApiError(404, 'File not found');
+    const user = await User.findById(req.params.id).select('aadharFront aadharBack');
+    const filename = kind === 'aadharFront' ? user?.aadharFront : user?.aadharBack;
+    if (!filename || !/^[\w.-]{1,120}$/.test(filename)) throw new ApiError(404, 'File not found');
+    const filePath = path.join(profileRoot, filename);
+    if (!filePath.startsWith(profileRoot + path.sep) || !fs.existsSync(filePath)) throw new ApiError(404, 'File not found');
+    const ext = path.extname(filename).toLowerCase();
+    res.setHeader('Content-Type', KYC_FILE_MIME[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.sendFile(filePath);
+  })
+);
+
+router.put(
+  '/users/:id/kyc',
+  requireAdminAuth,
+  requirePermission('users.update'),
+  audit('kyc.review', 'User'),
+  asyncHandler(async (req, res) => {
+    const { status, reason } = z
+      .object({ status: z.enum(['verified', 'rejected']), reason: z.string().max(500).optional() })
+      .parse(req.body);
+    const user = await User.findById(req.params.id);
+    if (!user) throw new ApiError(404, 'User not found');
+    if (!user.aadharFront && !user.aadharBack) throw new ApiError(400, 'No KYC documents uploaded');
+    user.kycStatus = status;
+    user.kycDocuments = user.kycDocuments ?? [];
+    user.kycDocuments.push({ type: 'review', url: '', status, reason });
+    await user.save();
+    res.json({ success: true, data: { id: user._id, kycStatus: user.kycStatus } });
   })
 );
 
