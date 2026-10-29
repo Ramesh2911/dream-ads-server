@@ -24,7 +24,9 @@ import { Banner } from '../../models/Banner';
 import { AdPlacement } from '../../models/AdPlacement';
 import { ReferralConfig } from '../../models/ReferralConfig';
 import { Setting } from '../../models/Setting';
+import { Notification } from '../../models/Notification';
 import { applyLedger, getBalances } from '../../services/ledger.service';
+import { notify, broadcast } from '../../services/notify.service';
 import { asyncHandler, ApiError } from '../../middleware/error';
 import { requireAdminAuth, requirePermission, signAccessToken } from '../../middleware/auth';
 import { audit } from '../../middleware/audit';
@@ -300,6 +302,18 @@ router.put(
     user.kycDocuments = user.kycDocuments ?? [];
     user.kycDocuments.push({ type: 'review', url: '', status, reason });
     await user.save();
+    notify({
+      userId: user._id,
+      type: 'system',
+      title: status === 'verified' ? 'KYC verified ✓' : 'KYC rejected',
+      body:
+        status === 'verified'
+          ? 'Your identity verification is complete. Withdrawals are now fully enabled.'
+          : reason
+            ? `Reason: ${reason}`
+            : 'Your identity verification could not be completed. Please re-upload valid documents.',
+      data: { kycStatus: status },
+    });
     res.json({ success: true, data: { id: user._id, kycStatus: user.kycStatus } });
   })
 );
@@ -329,6 +343,18 @@ router.put(
     const { status } = z.object({ status: z.enum(['active', 'suspended', 'banned', 'pending_delete']) }).parse(req.body);
     const user = await User.findByIdAndUpdate(req.params.id, { status }, { new: true }).select('-password');
     if (!user) throw new ApiError(404, 'User not found');
+    notify({
+      userId: user._id,
+      type: 'system',
+      title: `Account ${status.replace('_', ' ')}`,
+      body:
+        status === 'active'
+          ? 'Your account has been re-enabled. Welcome back!'
+          : status === 'pending_delete'
+            ? 'Your account is scheduled for deletion. Contact support to cancel.'
+            : `Your account has been ${status}. Contact support if you believe this is a mistake.`,
+      data: { accountStatus: status },
+    });
     res.json({ success: true, data: user });
   })
 );
@@ -1061,7 +1087,7 @@ router.put(
     const submission = await TaskSubmission.findById(req.params.id).populate('task');
     if (!submission) throw new ApiError(404, 'Submission not found');
     if (submission.status !== 'pending') throw new ApiError(400, 'Already reviewed');
-    const task = submission.task as unknown as { rewardCoins: number; rewardWallet: 'video' | 'social' };
+    const task = submission.task as unknown as { title?: string; rewardCoins: number; rewardWallet: 'video' | 'social' };
 
     submission.status = status;
     submission.reviewedBy = req.admin!._id;
@@ -1081,6 +1107,20 @@ router.put(
         createdBy: req.admin!._id,
       });
     }
+    notify({
+      userId: submission.user,
+      type: 'task',
+      title: status === 'approved' ? 'Task approved 🎉' : 'Task not approved',
+      body:
+        status === 'approved'
+          ? task.rewardCoins > 0
+            ? `“${task.title ?? 'Your task'}” approved — +${task.rewardCoins} coins credited to your ${task.rewardWallet} wallet.`
+            : `“${task.title ?? 'Your task'}” has been approved.`
+          : rejectionReason
+            ? `Reason: ${rejectionReason}`
+            : 'Your submission was not approved. Please review the task requirements and try again.',
+      data: { status, taskId: String(task.title ?? '') },
+    });
     res.json({ success: true, data: submission });
   })
 );
@@ -1141,6 +1181,21 @@ router.put(
     if (rejectionReason) withdrawal.rejectionReason = rejectionReason;
     if (paymentRef) withdrawal.paymentRef = paymentRef;
     await withdrawal.save();
+    notify({
+      userId: withdrawal.user,
+      type: 'finance',
+      title:
+        status === 'rejected' ? 'Withdrawal rejected' : status === 'paid' ? 'Withdrawal paid ✓' : 'Withdrawal approved ✓',
+      body:
+        status === 'rejected'
+          ? rejectionReason
+            ? `Reason: ${rejectionReason} — ${withdrawal.amount} has been refunded to your wallet.`
+            : `${withdrawal.amount} has been refunded to your wallet.`
+          : status === 'paid'
+            ? `Your withdrawal of ${withdrawal.amount} has been sent${paymentRef ? ` (Ref: ${paymentRef})` : ''}.`
+            : `${withdrawal.amount} approved and queued for payout.`,
+      data: { status, amount: withdrawal.amount, method: withdrawal.method },
+    });
     res.json({ success: true, data: withdrawal });
   })
 );
@@ -1274,6 +1329,16 @@ router.put(
         createdBy: req.admin!._id,
       });
     }
+    notify({
+      userId: deposit.user,
+      type: 'finance',
+      title: status === 'completed' ? 'Deposit completed ✓' : 'Deposit failed',
+      body:
+        status === 'completed'
+          ? `${deposit.amount} has been added to your social wallet.`
+          : `Your deposit of ${deposit.amount} could not be verified. Contact support with your payment reference.`,
+      data: { status, amount: deposit.amount, gateway: deposit.gateway },
+    });
     res.json({ success: true, data: deposit });
   })
 );
@@ -1420,6 +1485,17 @@ router.put(
     redemption.status = status;
     if (code) redemption.code = code;
     await redemption.save();
+    const voucherTitle = (redemption.voucher as unknown as { title?: string })?.title ?? 'Your voucher';
+    notify({
+      userId: redemption.user,
+      type: 'reward',
+      title: status === 'fulfilled' ? 'Voucher delivered 🎁' : 'Voucher request failed',
+      body:
+        status === 'fulfilled'
+          ? `${voucherTitle} code: ${code} — redeem it before the expiry date.`
+          : `${voucherTitle} could not be delivered. Your coins will be reviewed by our team.`,
+      data: { status, voucher: voucherTitle },
+    });
     res.json({ success: true, data: redemption });
   })
 );
@@ -1940,6 +2016,79 @@ router.put(
       await Setting.findOneAndUpdate({ key }, { key, value }, { upsert: true });
     }
     res.json({ success: true, message: 'Settings updated' });
+  })
+);
+
+// ---- Notifications: broadcast history + send ----
+const broadcastSchema = z.object({
+  title: z.string().trim().min(2).max(120),
+  body: z.string().trim().min(2).max(2000),
+  type: z.enum(['info', 'reward', 'task', 'referral', 'finance', 'system']).default('info'),
+  target: z.string().trim().max(200).optional().or(z.literal('')).transform((v) => v || undefined),
+});
+
+router.get(
+  '/notifications',
+  requireAdminAuth,
+  requirePermission('cms.read'),
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        page: z.coerce.number().int().min(1).default(1),
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+      })
+      .parse(req.query);
+
+    const ledgerFilter = { 'data.broadcast': true };
+    const [items, total, usersTotal] = await Promise.all([
+      Notification.find(ledgerFilter)
+        .sort({ createdAt: -1 })
+        .skip((q.page - 1) * q.limit)
+        .limit(q.limit)
+        .select('title body type data createdAt')
+        .lean(),
+      Notification.countDocuments(ledgerFilter),
+      User.countDocuments({ status: { $ne: 'deleted' } }),
+    ]);
+    const delivered = await Notification.countDocuments({ 'data.broadcast': true });
+    const recipientsAgg = await Notification.aggregate([
+      { $match: { 'data.broadcast': true } },
+      { $group: { _id: null, sum: { $sum: { $ifNull: ['$data.recipients', 0] } } } },
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        items,
+        total,
+        page: q.page,
+        pages: Math.ceil(total / q.limit),
+        stats: {
+          broadcasts: total,
+          delivered: recipientsAgg[0]?.sum ?? 0,
+          ledgerDocs: delivered,
+          recipients: usersTotal,
+        },
+      },
+    });
+  })
+);
+
+router.post(
+  '/notifications/broadcast',
+  requireAdminAuth,
+  requirePermission('cms.broadcast'),
+  audit('notifications.broadcast', 'Notification'),
+  asyncHandler(async (req, res) => {
+    const parsed = broadcastSchema.parse(req.body);
+    const { recipients } = await broadcast({
+      title: parsed.title,
+      body: parsed.body,
+      type: parsed.type,
+      target: parsed.target,
+      sentBy: req.admin?.email,
+    });
+    res.status(201).json({ success: true, message: `Sent to ${recipients} user${recipients === 1 ? '' : 's'}`, data: { recipients } });
   })
 );
 

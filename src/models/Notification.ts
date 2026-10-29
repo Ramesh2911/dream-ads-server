@@ -23,4 +23,7 @@ const notificationSchema = new Schema<INotification>(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 
+// list query: own notifications newest-first + unread filter
+notificationSchema.index({ user: 1, createdAt: -1 });
+
 export const Notification = mongoose.model<INotification>('Notification', notificationSchema);

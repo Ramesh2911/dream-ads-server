@@ -11,6 +11,7 @@ import { env } from '../../config/env';
 import { asyncHandler, ApiError } from '../../middleware/error';
 import { requireUserAuth, signAccessToken, signRefreshToken } from '../../middleware/auth';
 import { getBalances } from '../../services/ledger.service';
+import { notify } from '../../services/notify.service';
 
 const router = Router();
 
@@ -114,6 +115,14 @@ router.post(
       const { distributeReferralRewards } = await import('../referrals/referrals.routes');
       distributeReferralRewards(String(user._id)).catch(() => {});
     }
+
+    notify({
+      userId: user._id,
+      type: 'info',
+      title: 'Welcome to Dream Ads 🎉',
+      body: 'Complete tasks, earn coins and withdraw your earnings. Explore your first task to get started.',
+      data: { welcome: true },
+    });
 
     const access = signAccessToken(String(user._id));
     const refresh = signRefreshToken(String(user._id));

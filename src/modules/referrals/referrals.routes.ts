@@ -5,6 +5,7 @@ import { applyLedger, getBalances } from '../../services/ledger.service';
 import { asyncHandler, ApiError } from '../../middleware/error';
 import { requireUserAuth } from '../../middleware/auth';
 import { logger } from '../../utils/logger';
+import { notify } from '../../services/notify.service';
 
 const router = Router();
 
@@ -77,6 +78,13 @@ export async function distributeReferralRewards(newUserId: string) {
           refModel: 'User',
           refId: newUserId as never,
           note: `Level ${level} referral reward`,
+        });
+        notify({
+          userId: ancestor._id,
+          type: 'referral',
+          title: `Referral reward +${reward.coins} 🎁`,
+          body: `Level ${level} referral — ${reward.coins} coins credited to your ${reward.wallet} wallet.`,
+          data: { level, coins: reward.coins, wallet: reward.wallet },
         });
       }
       currentAncestor = await User.findById(ancestor._id).select('referredBy').lean();

@@ -16,6 +16,7 @@ import walletRoutes from './modules/wallet/wallet.routes';
 import financeRoutes from './modules/finance/finance.routes';
 import adminRoutes from './modules/admin/admin.routes';
 import inquiriesRoutes from './modules/inquiries/inquiries.routes';
+import notificationsRoutes from './modules/notifications/notifications.routes';
 
 const app = express();
 
@@ -93,6 +94,7 @@ app.post('/api/internal/restart', (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/notifications', notificationsRoutes);
 app.use('/api', videosRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/referrals', referralsRoutes);
