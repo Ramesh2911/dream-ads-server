@@ -6,6 +6,7 @@ import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import { Task } from '../../models/Task';
 import { TaskSubmission } from '../../models/TaskSubmission';
+import { LedgerEntry } from '../../models/LedgerEntry';
 import { AdminUser } from '../../models/AdminUser';
 import { env } from '../../config/env';
 import { asyncHandler, ApiError } from '../../middleware/error';
@@ -57,8 +58,9 @@ router.get(
   '/',
   requireUserAuth,
   asyncHandler(async (req, res) => {
-    const { status = 'active', page = 1, limit = 20 } = req.query;
+    const { status = 'active', page = 1, limit = 20, proofType } = req.query;
     const filter: Record<string, unknown> = { status };
+    if (proofType === 'screenshot' || proofType === 'url' || proofType === 'text') filter.proofType = proofType;
     const skip = (Number(page) - 1) * Number(limit);
     const [tasks, total] = await Promise.all([
       Task.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
@@ -66,12 +68,63 @@ router.get(
     ]);
     const userId = req.user!._id;
     const submissions = await TaskSubmission.find({ user: userId, task: { $in: tasks.map((t) => t._id) } });
-    const submittedMap = new Map(submissions.map((s) => [String(s.task), s.status]));
-    const data = tasks.map((t) => ({
-      ...t.toObject(),
-      mySubmissionStatus: submittedMap.get(String(t._id)) || null,
-    }));
+    const submittedMap = new Map(submissions.map((s) => [String(s.task), s]));
+    const data = tasks.map((t) => {
+      const sub = submittedMap.get(String(t._id));
+      return {
+        ...t.toObject(),
+        mySubmissionStatus: sub?.status || null,
+        mySubmission: sub
+          ? { status: sub.status, rejectionReason: sub.rejectionReason, submittedAt: sub.createdAt }
+          : null,
+      };
+    });
     res.json({ success: true, data: { tasks: data, total, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  })
+);
+
+// MUST stay before GET /:id — otherwise 'my-submissions' is captured as an id
+router.get(
+  '/my-submissions',
+  requireUserAuth,
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        page: z.coerce.number().int().min(1).default(1),
+        limit: z.coerce.number().int().min(1).max(50).default(20),
+      })
+      .parse(req.query);
+    const filter = { user: req.user!._id };
+    const skip = (q.page - 1) * q.limit;
+
+    const [submissions, total, statusCounts, earnedAgg] = await Promise.all([
+      TaskSubmission.find(filter)
+        .populate('task', 'title rewardCoins rewardWallet proofType')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(q.limit)
+        .lean(),
+      TaskSubmission.countDocuments(filter),
+      TaskSubmission.aggregate([
+        { $match: { user: req.user!._id } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      LedgerEntry.aggregate([
+        { $match: { user: req.user!._id, reason: 'task_reward', type: 'credit' } },
+        { $group: { _id: null, sum: { $sum: '$amount' } } },
+      ]),
+    ]);
+
+    const stats = { pending: 0, approved: 0, rejected: 0, earned: 0 };
+    for (const c of statusCounts as Array<{ _id: string; count: number }>) {
+      if (c._id === 'pending' || c._id === 'approved' || c._id === 'rejected') stats[c._id] = c.count;
+    }
+    stats.earned = earnedAgg[0]?.sum ?? 0;
+
+    res.json({
+      success: true,
+      data: { submissions, total, page: q.page, pages: Math.ceil(total / q.limit), stats },
+    });
   })
 );
 
