@@ -157,6 +157,27 @@ router.post(
   })
 );
 
+/** Exchange a valid refresh token for a fresh access token — the app's axios
+ *  interceptor calls this on 401 so short-lived (15m) access tokens renew silently. */
+router.post(
+  '/refresh',
+  asyncHandler(async (req: Request, res) => {
+    const { refreshToken } = z.object({ refreshToken: z.string().min(20) }).parse(req.body);
+    let payload: jwt.JwtPayload;
+    try {
+      payload = jwt.verify(refreshToken, env.jwtRefreshSecret) as jwt.JwtPayload;
+    } catch {
+      throw new ApiError(401, 'Invalid or expired refresh token');
+    }
+    if (payload.type !== 'refresh') throw new ApiError(401, 'Invalid or expired refresh token');
+    const user = await User.findById(payload.sub);
+    if (!user || user.status === 'deleted' || user.status === 'banned' || user.status === 'suspended') {
+      throw new ApiError(401, 'Invalid or expired refresh token');
+    }
+    res.json({ success: true, data: { accessToken: signAccessToken(String(user._id)) } });
+  })
+);
+
 router.get(
   '/me',
   requireUserAuth,
