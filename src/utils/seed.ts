@@ -62,17 +62,17 @@ async function seed() {
   if (videoCount === 0 && entCat) {
     await Video.insertMany([
       {
-        title: 'Welcome to Dream Ads', description: 'Intro video', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+        title: 'Welcome to Dream Ads', description: 'Intro video', url: 'https://media.w3.org/2010/05/bunny/movie.mp4',
         thumbnail: 'https://images.unsplash.com/photo-1611162616475-46b635cb6868?w=800', category: entCat._id, duration: 60,
         rewardCoins: 10, rewardWallet: 'video', status: 'published', isFeatured: true, isTrending: true,
       },
       {
-        title: 'Daily Earning Tips', description: 'Learn how to maximize rewards', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+        title: 'Daily Earning Tips', description: 'Learn how to maximize rewards', url: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
         thumbnail: 'https://images.unsplash.com/photo-1611162617474-5b21e879e113?w=800', category: entCat._id, duration: 45,
         rewardCoins: 8, rewardWallet: 'video', status: 'published', isFeatured: true,
       },
       {
-        title: 'Fun Challenges Compilation', description: 'Best challenges', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+        title: 'Fun Challenges Compilation', description: 'Best challenges', url: 'https://media.w3.org/2010/05/video/movie_300.mp4',
         thumbnail: 'https://images.unsplash.com/photo-1516035069371-29a1b244cc32?w=800', category: entCat._id, duration: 30,
         rewardCoins: 5, rewardWallet: 'video', status: 'published', isTrending: true,
       },
