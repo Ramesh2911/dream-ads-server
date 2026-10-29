@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { env } from './config/env';
 import { connectDB } from './config/database';
 import { errorHandler, notFound } from './middleware/error';
@@ -54,24 +54,42 @@ app.post('/api/internal/restart', (req, res) => {
   const appDir = `/home/dreamads/${target}/`;
   const install = req.body?.install === true || req.query?.install === '1';
   logger.info(`restart requested for ${target} install=${install}`);
-  try {
-    if (install) {
-      execSync(`cd ${appDir} && npm install --omit=dev --no-audit --no-fund`, { timeout: 180000 });
-    }
-    // bracket trick: regex [l]snode matches lsnode but our own cmdline has
-    // literal [l]snode so pkill never kills the caller mid-request
-    execSync(`pkill -9 -f '[l]snode.*${appDir}' || true`, { timeout: 5000 });
-  } catch (e) {
-    logger.error(`restart/install failed for ${target}: ${e}`);
-  }
-  if (target === 'backend') {
-    // respond, then die so supervisor restarts us with the new dist
-    setTimeout(() => {
+  // Respond BEFORE the heavy work. Doing `npm install` synchronously here
+  // blocked the event loop for up to 3 minutes, so LiteSpeed timed out and
+  // CI saw a 503 before this handler could ever reply.
+  res.json({ success: true, restarted: target, install });
+  setTimeout(() => {
+    const cmd = [
+      install ? `cd '${appDir}' && npm install --omit=dev --no-audit --no-fund` : '',
+      // bracket trick: regex [l]snode matches lsnode but our own cmdline has
+      // literal [l]snode so pkill never kills the caller mid-request
+      `pkill -9 -f '[l]snode.*${appDir}' || true`,
+    ]
+      .filter(Boolean)
+      .join('; ');
+    let done = false;
+    const die = () => {
+      if (done) return;
+      done = true;
       try { process.kill(process.pid, 'SIGKILL'); } catch { /* already gone */ }
       process.exit(0);
-    }, 250);
-  }
-  return res.json({ success: true, restarted: target, install });
+    };
+    // only the backend worker respawns itself; a website restart must leave us alone
+    const dieLater = () => { if (target === 'backend') setTimeout(die, 250); };
+    try {
+      const child = spawn('/bin/sh', ['-c', cmd], { stdio: 'ignore' });
+      child.on('exit', dieLater);
+      child.on('error', (e) => {
+        logger.error(`restart spawn failed for ${target}: ${e}`);
+        dieLater();
+      });
+    } catch (e) {
+      logger.error(`restart spawn failed for ${target}: ${e}`);
+      dieLater();
+    }
+    // safety net: never leave the worker stuck on old code
+    if (target === 'backend') setTimeout(die, 240000);
+  }, 400);
 });
 
 app.use('/api/auth', authRoutes);
