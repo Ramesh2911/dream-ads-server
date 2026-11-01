@@ -175,8 +175,10 @@ router.post(
   })
 );
 
+// Play-store terminology masking: canonical paths are /redeems & /activations;
+// legacy /withdrawals & /deposits kept as aliases so old app builds keep working.
 router.get(
-  '/withdrawals',
+  ['/redeems', '/withdrawals'],
   requireUserAuth,
   asyncHandler(async (req, res) => {
     const withdrawals = await Withdrawal.find({ user: req.user!._id }).sort({ createdAt: -1 });
@@ -185,7 +187,7 @@ router.get(
 );
 
 router.post(
-  '/withdrawals',
+  ['/redeems', '/withdrawals'],
   requireUserAuth,
   asyncHandler(async (req, res) => {
     const data = z
@@ -199,14 +201,14 @@ router.post(
           .string()
           .trim()
           .toUpperCase()
-          .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid IFSC code')
+          .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, 'Invalid Branch Code')
           .optional(),
         bankName: z.string().trim().min(2).max(60).optional(),
       })
       .superRefine((v, ctx) => {
         if (v.method === 'bank') {
           if (!v.accountNo) ctx.addIssue({ code: 'custom', path: ['accountNo'], message: 'Account number is required' });
-          if (!v.ifsc) ctx.addIssue({ code: 'custom', path: ['ifsc'], message: 'IFSC code is required' });
+          if (!v.ifsc) ctx.addIssue({ code: 'custom', path: ['ifsc'], message: 'Branch Code is required' });
           if (!v.bankName) ctx.addIssue({ code: 'custom', path: ['bankName'], message: 'Bank name is required' });
         } else if (!v.destination) {
           ctx.addIssue({ code: 'custom', path: ['destination'], message: 'Destination is required' });
@@ -217,13 +219,13 @@ router.post(
     const isBank = data.method === 'bank';
     // bank payouts: compose the destination server-side so the admin sees one
     // consistent string while structured fields stay queryable
-    const destination = isBank ? `A/C ${data.accountNo} · IFSC ${data.ifsc} · ${data.bankName}` : data.destination!;
+    const destination = isBank ? `A/C ${data.accountNo} · Branch Code ${data.ifsc} · ${data.bankName}` : data.destination!;
 
     const balances = await getBalances(req.user!._id);
     if (balances[data.wallet] < data.amount) throw new ApiError(400, 'Insufficient balance');
 
     const pending = await Withdrawal.countDocuments({ user: req.user!._id, status: 'pending' });
-    if (pending > 0) throw new ApiError(400, 'You already have a pending withdrawal');
+    if (pending > 0) throw new ApiError(400, 'You already have a pending redeem request');
 
     const { balance } = await applyLedger({
       userId: req.user!._id,
@@ -231,7 +233,7 @@ router.post(
       type: 'debit',
       amount: data.amount,
       reason: 'withdrawal',
-      note: `Withdrawal request via ${data.method}`,
+      note: `Redeem request via ${data.method === 'upi' ? 'Digital Handle' : data.method}`,
     });
 
     const withdrawal = await Withdrawal.create({
@@ -247,7 +249,7 @@ router.post(
 );
 
 router.get(
-  '/deposits',
+  ['/activations', '/deposits'],
   requireUserAuth,
   asyncHandler(async (req, res) => {
     const deposits = await Deposit.find({ user: req.user!._id }).sort({ createdAt: -1 });
@@ -256,7 +258,7 @@ router.get(
 );
 
 router.post(
-  '/deposits',
+  ['/activations', '/deposits'],
   requireUserAuth,
   asyncHandler(async (req, res) => {
     const data = z.object({ amount: z.number().min(MIN_DEPOSIT), gateway: z.string().default('manual') }).parse(req.body);

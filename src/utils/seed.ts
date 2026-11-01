@@ -143,8 +143,8 @@ async function seed() {
   const voucherCount = await Voucher.countDocuments();
   if (voucherCount === 0) {
     await Voucher.insertMany([
-      { title: 'Mobile Recharge ₹50', provider: 'recharge', coinCost: 500, faceValue: 50, isActive: true, stock: 100 },
-      { title: 'Gift Voucher ₹100', provider: 'voucher', coinCost: 1000, faceValue: 100, isActive: true, stock: 50 },
+      { title: 'Mobile Recharge 50', provider: 'recharge', coinCost: 500, faceValue: 50, isActive: true, stock: 100 },
+      { title: 'Gift Voucher 100', provider: 'voucher', coinCost: 1000, faceValue: 100, isActive: true, stock: 50 },
     ]);
   }
 

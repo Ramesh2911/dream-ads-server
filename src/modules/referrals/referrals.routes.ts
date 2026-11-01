@@ -83,7 +83,7 @@ export async function distributeReferralRewards(newUserId: string) {
           userId: ancestor._id,
           type: 'referral',
           title: `Referral reward +${reward.coins} 🎁`,
-          body: `Level ${level} referral — ${reward.coins} coins credited to your ${reward.wallet} wallet.`,
+          body: `Level ${level} referral — ${reward.coins} coins credited to your ${reward.wallet} passbook.`,
           data: { level, coins: reward.coins, wallet: reward.wallet },
         });
       }

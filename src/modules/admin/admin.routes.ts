@@ -310,7 +310,7 @@ router.put(
       title: status === 'verified' ? 'KYC verified ✓' : 'KYC rejected',
       body:
         status === 'verified'
-          ? 'Your identity verification is complete. Withdrawals are now fully enabled.'
+          ? 'Your identity verification is complete. Redeems are now fully enabled.'
           : reason
             ? `Reason: ${reason}`
             : 'Your identity verification could not be completed. Please re-upload valid documents.',
@@ -1116,7 +1116,7 @@ router.put(
       body:
         status === 'approved'
           ? task.rewardCoins > 0
-            ? `“${task.title ?? 'Your task'}” approved — +${task.rewardCoins} coins credited to your ${task.rewardWallet} wallet.`
+            ? `“${task.title ?? 'Your task'}” approved — +${task.rewardCoins} coins credited to your ${task.rewardWallet} passbook.`
             : `“${task.title ?? 'Your task'}” has been approved.`
           : rejectionReason
             ? `Reason: ${rejectionReason}`
@@ -1129,7 +1129,7 @@ router.put(
 
 // ---- Withdrawals ----
 router.get(
-  '/withdrawals',
+  ['/redeems', '/withdrawals'],
   requireAdminAuth,
   requirePermission('finance.read'),
   asyncHandler(async (req, res) => {
@@ -1149,7 +1149,7 @@ router.get(
 );
 
 router.put(
-  '/withdrawals/:id',
+  ['/redeems/:id', '/withdrawals/:id'],
   requireAdminAuth,
   requirePermission('finance.approve'),
   audit('withdrawal.review', 'Withdrawal'),
@@ -1158,7 +1158,7 @@ router.put(
       .object({ status: z.enum(['approved', 'rejected', 'paid']), rejectionReason: z.string().optional(), paymentRef: z.string().optional() })
       .parse(req.body);
     const withdrawal = await Withdrawal.findById(req.params.id);
-    if (!withdrawal) throw new ApiError(404, 'Withdrawal not found');
+    if (!withdrawal) throw new ApiError(404, 'Redeem not found');
     if (withdrawal.status !== 'pending' && !(withdrawal.status === 'approved' && status === 'paid'))
       throw new ApiError(400, 'Invalid status transition');
 
@@ -1172,7 +1172,7 @@ router.put(
         reason: 'admin_adjustment',
         refModel: 'Withdrawal',
         refId: withdrawal._id,
-        note: 'Withdrawal rejected — refund',
+        note: 'Redeem rejected — refund',
         createdBy: req.admin!._id,
       });
     }
@@ -1187,14 +1187,14 @@ router.put(
       userId: withdrawal.user,
       type: 'finance',
       title:
-        status === 'rejected' ? 'Withdrawal rejected' : status === 'paid' ? 'Withdrawal paid ✓' : 'Withdrawal approved ✓',
+        status === 'rejected' ? 'Redeem rejected' : status === 'paid' ? 'Redeem paid ✓' : 'Redeem approved ✓',
       body:
         status === 'rejected'
           ? rejectionReason
-            ? `Reason: ${rejectionReason} — ${withdrawal.amount} has been refunded to your wallet.`
-            : `${withdrawal.amount} has been refunded to your wallet.`
+            ? `Reason: ${rejectionReason} — ${withdrawal.amount} has been refunded to your passbook.`
+            : `${withdrawal.amount} has been refunded to your passbook.`
           : status === 'paid'
-            ? `Your withdrawal of ${withdrawal.amount} has been sent${paymentRef ? ` (Ref: ${paymentRef})` : ''}.`
+            ? `Your redeem request of ${withdrawal.amount} has been sent${paymentRef ? ` (Ref: ${paymentRef})` : ''}.`
             : `${withdrawal.amount} approved and queued for payout.`,
       data: { status, amount: withdrawal.amount, method: withdrawal.method },
     });
@@ -1204,7 +1204,7 @@ router.put(
 
 // ---- Deposits ----
 router.get(
-  '/deposits',
+  ['/activations', '/deposits'],
   requireAdminAuth,
   requirePermission('finance.read'),
   asyncHandler(async (req, res) => {
@@ -1307,14 +1307,14 @@ router.get(
 );
 
 router.put(
-  '/deposits/:id',
+  ['/activations/:id', '/deposits/:id'],
   requireAdminAuth,
   requirePermission('finance.approve'),
   audit('deposit.review', 'Deposit'),
   asyncHandler(async (req, res) => {
     const { status, gatewayRef } = z.object({ status: z.enum(['completed', 'failed']), gatewayRef: z.string().optional() }).parse(req.body);
     const deposit = await Deposit.findById(req.params.id);
-    if (!deposit) throw new ApiError(404, 'Deposit not found');
+    if (!deposit) throw new ApiError(404, 'Activation not found');
     if (deposit.status !== 'pending') throw new ApiError(400, 'Already processed');
     deposit.status = status;
     if (gatewayRef) deposit.gatewayRef = gatewayRef;
@@ -1334,11 +1334,11 @@ router.put(
     notify({
       userId: deposit.user,
       type: 'finance',
-      title: status === 'completed' ? 'Deposit completed ✓' : 'Deposit failed',
+      title: status === 'completed' ? 'Activation completed ✓' : 'Activation failed',
       body:
         status === 'completed'
-          ? `${deposit.amount} has been added to your social wallet.`
-          : `Your deposit of ${deposit.amount} could not be verified. Contact support with your payment reference.`,
+          ? `${deposit.amount} has been added to your social passbook.`
+          : `Your activation of ${deposit.amount} could not be verified. Contact support with your payment reference.`,
       data: { status, amount: deposit.amount, gateway: deposit.gateway },
     });
     res.json({ success: true, data: deposit });

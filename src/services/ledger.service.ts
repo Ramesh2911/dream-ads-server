@@ -23,7 +23,7 @@ export class LedgerError extends Error {
 
 /**
  * Atomically applies a balance change and appends an immutable ledger entry.
- * All money movement MUST go through this function.
+ * All points movement MUST go through this function.
  */
 export async function applyLedger(opts: ApplyLedgerOpts) {
   const userId = new Types.ObjectId(String(opts.userId));
