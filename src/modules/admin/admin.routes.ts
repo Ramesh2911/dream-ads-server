@@ -3,6 +3,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
 import path from 'path';
+import multer from 'multer';
 import { env } from '../../config/env';
 import { User } from '../../models/User';
 import { AdminUser } from '../../models/AdminUser';
@@ -15,6 +16,7 @@ import { Task } from '../../models/Task';
 import { TaskSubmission } from '../../models/TaskSubmission';
 import { Withdrawal } from '../../models/Withdrawal';
 import { Deposit } from '../../models/Deposit';
+import { MembershipRequest } from '../../models/MembershipRequest';
 import { AuditLog } from '../../models/AuditLog';
 import { Inquiry } from '../../models/Inquiry';
 import { Voucher } from '../../models/Voucher';
@@ -1986,8 +1988,150 @@ const settingsSchema = z
     minWithdrawal: z.coerce.number().int().min(0).max(1_000_000),
     signupBonus: z.coerce.number().int().min(0).max(100_000),
     maintenanceMode: z.boolean(),
+    activationFee: z.coerce.number().int().min(0).max(10_000_000).optional(),
+    upiQr: z.string().max(120).optional(),
+    usdtQr: z.string().max(120).optional(),
+    usdtAddress: z.string().max(120).optional(),
+    usdtMin: z.coerce.number().min(0).max(1_000_000).optional(),
   })
   .strict();
+
+// ---- Payment QR upload (membership activation) ----
+const paymentQrRoot = path.resolve(env.uploadDir, 'payment');
+fs.mkdirSync(paymentQrRoot, { recursive: true });
+
+const qrStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, paymentQrRoot),
+  filename: (_req, file, cb) => {
+    const safe = file.originalname.replace(/[^\w.-]+/g, '_').slice(-80);
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+  },
+});
+
+const qrUpload = multer({
+  storage: qrStorage,
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype))
+      return cb(new ApiError(400, 'Image must be PNG, JPG or WEBP'));
+    cb(null, true);
+  },
+});
+
+router.post(
+  '/settings/payment-qr',
+  requireAdminAuth,
+  requirePermission('settings.manage'),
+  qrUpload.single('file'),
+  audit('settings.update', 'Setting'),
+  asyncHandler(async (req, res) => {
+    const kind = z.enum(['upi', 'usdt']).parse(req.body?.kind);
+    const file = req.file;
+    if (!file) throw new ApiError(400, 'QR image is required');
+    const key = `${kind}Qr`;
+    const previous = await Setting.findOne({ key }).lean();
+    await Setting.findOneAndUpdate({ key }, { key, value: file.filename }, { upsert: true });
+    if (previous && typeof previous.value === 'string' && /^[\w.-]{1,120}$/.test(previous.value)) {
+      try {
+        fs.unlinkSync(path.join(paymentQrRoot, previous.value));
+      } catch {
+        /* old file may already be gone */
+      }
+    }
+    res.status(201).json({ success: true, data: { key, value: file.filename } });
+  })
+);
+
+// ---- Membership activation requests ----
+router.get(
+  '/membership-requests/:id/screenshot',
+  requireAdminAuth,
+  requirePermission('finance.read'),
+  asyncHandler(async (req, res) => {
+    const request = await MembershipRequest.findById(req.params.id);
+    if (!request) throw new ApiError(404, 'Request not found');
+    const file = request.screenshot;
+    if (!file || !/^[\w.-]{1,120}$/.test(file)) throw new ApiError(404, 'Screenshot not found');
+    const full = path.resolve(env.uploadDir, 'payment', file);
+    if (!fs.existsSync(full)) throw new ApiError(404, 'Screenshot file missing');
+    const ext = path.extname(file).toLowerCase();
+    const types: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
+    res.setHeader('Content-Type', types[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    fs.createReadStream(full).pipe(res);
+  })
+);
+
+router.get(
+  '/membership-requests',
+  requireAdminAuth,
+  requirePermission('finance.read'),
+  asyncHandler(async (req, res) => {
+    const { status, page = 1, limit = 20 } = req.query;
+    const filter: Record<string, unknown> = {};
+    if (status) filter.status = status;
+    const skip = (Number(page) - 1) * Number(limit);
+    const [requests, total, countsRaw] = await Promise.all([
+      MembershipRequest.find(filter)
+        .populate('user', 'name email mobile membershipStatus')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      MembershipRequest.countDocuments(filter),
+      MembershipRequest.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    ]);
+    const counts: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+    for (const c of countsRaw as Array<{ _id: string; count: number }>) counts[c._id] = c.count;
+    res.json({ success: true, data: { requests, total, page: Number(page), pages: Math.ceil(total / Number(limit)), counts } });
+  })
+);
+
+router.put(
+  '/membership-requests/:id',
+  requireAdminAuth,
+  requirePermission('finance.approve'),
+  audit('membership.review', 'MembershipRequest'),
+  asyncHandler(async (req, res) => {
+    const { status, rejectionReason } = z
+      .object({ status: z.enum(['approved', 'rejected']), rejectionReason: z.string().max(500).optional() })
+      .parse(req.body);
+    const request = await MembershipRequest.findById(req.params.id);
+    if (!request) throw new ApiError(404, 'Request not found');
+    if (request.status !== 'pending') throw new ApiError(400, 'Invalid status transition');
+
+    request.status = status;
+    request.reviewedBy = req.admin!._id;
+    request.reviewedAt = new Date();
+    if (rejectionReason) request.rejectionReason = rejectionReason;
+    await request.save();
+
+    const user = await User.findById(request.user);
+    if (user) {
+      if (status === 'approved') {
+        user.membershipStatus = 'active';
+        user.membershipActiveAt = new Date();
+      } else {
+        user.membershipStatus = 'none';
+      }
+      await user.save();
+    }
+
+    notify({
+      userId: request.user,
+      type: 'system',
+      title: status === 'approved' ? 'Lifetime Membership activated ✓' : 'Membership request rejected',
+      body:
+        status === 'approved'
+          ? 'Your lifetime membership is now active. Enjoy your premium benefits!'
+          : rejectionReason
+            ? `Reason: ${rejectionReason} — please review the payment details and try again.`
+            : 'Your membership request was not approved. Please review the payment details and try again.',
+      data: { status, amount: request.amount, method: request.method },
+    });
+
+    res.json({ success: true, data: request });
+  })
+);
 
 router.get(
   '/settings',

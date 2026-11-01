@@ -19,6 +19,8 @@ export interface IUser extends Document {
   kycDocuments?: { type: string; url: string; status: string; reason?: string }[];
   fcmToken?: string;
   lastLoginAt?: Date;
+  membershipStatus: 'none' | 'pending' | 'active';
+  membershipActiveAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,6 +43,8 @@ const userSchema = new Schema<IUser>(
     kycDocuments: [{ type: String, url: String, status: String, reason: String }],
     fcmToken: { type: String },
     lastLoginAt: { type: Date },
+    membershipStatus: { type: String, enum: ['none', 'pending', 'active'], default: 'none', index: true },
+    membershipActiveAt: { type: Date },
   },
   { timestamps: true }
 );

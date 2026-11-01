@@ -129,6 +129,11 @@ async function seed() {
     minWithdrawal: 100,
     signupBonus: 0,
     maintenanceMode: false,
+    activationFee: 151,
+    upiQr: '',
+    usdtQr: '',
+    usdtAddress: '',
+    usdtMin: 2,
   };
   for (const [key, value] of Object.entries(settings)) {
     await Setting.findOneAndUpdate({ key }, { key, value }, { upsert: true });

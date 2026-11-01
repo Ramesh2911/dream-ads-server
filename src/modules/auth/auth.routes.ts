@@ -199,6 +199,7 @@ router.get(
         id: u._id, name: u.name, email: u.email, mobile: u.mobile, referralCode: u.referralCode,
         dob: u.dob, avatar: u.avatar, aadharFront: u.aadharFront, aadharBack: u.aadharBack,
         status: u.status, kycStatus: u.kycStatus, isAgeVerified: u.isAgeVerified, balances,
+        membershipStatus: u.membershipStatus ?? 'none', membershipActiveAt: u.membershipActiveAt ?? null,
       },
     });
   })
