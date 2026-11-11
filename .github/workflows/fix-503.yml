@@ -1,0 +1,127 @@
+name: Fix 503 - env and dist
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build
+        run: npm ci && npm run build
+        working-directory: backend
+
+      - name: Fix env, upload dist, poll health
+        env:
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          AUTH="Authorization: cpanel dreamads:${CPANEL_API_TOKEN}"
+          BASE="https://server.shodns.in:2083"
+
+          getfile() {
+            local dir="$1" file="$2"
+            local edir efile
+            edir=$(printf '%s' "$dir" | jq -sRr @uri)
+            efile=$(printf '%s' "$file" | jq -sRr @uri)
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/get_file_content?dir=${edir}&file=${efile}"
+          }
+
+          savefile() {
+            local dir="$1" file="$2" content="$3"
+            curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/save_file_content" \
+              -F "dir=$dir" -F "file=$file" -F "content=$content"
+          }
+
+          echo "===== 1. Write production .env ====="
+          # Real JWT secrets from local, PORT=5000, prod CORS, Atlas URI
+          ENV_CONTENT=$(cat <<'ENVEOF'
+PORT=5000
+MONGODB_URI=mongodb+srv://Ramesh0329:XRwEUdXA1jng79Bh@cluster0.9p3djjh.mongodb.net/dream-ads?retryWrites=true&w=majority
+JWT_ACCESS_SECRET=7Ve5exd8vpiYZC0sCkIlj9DUoy4zsHmt3K2ImAIq1Ghf8sxZAqt79SbMI9kdqwRx
+JWT_REFRESH_SECRET=fFj1F5oA0YWiXX473HmKHr0ZR-XsiS2Mi5ARxy8xn04pyN4g2cmUF4okLXVjI_UA
+JWT_ACCESS_EXPIRY=15m
+JWT_REFRESH_EXPIRY=30d
+NODE_ENV=production
+CORS_ORIGIN=http://localhost:5173,http://localhost:3100,http://localhost:8081,https://dreamads.in,https://www.dreamads.in,http://dreamads.in,https://admin.dreamads.in,http://admin.dreamads.in
+UPLOAD_DIR=uploads
+FIREBASE_PROJECT_ID=
+GOOGLE_APPLICATION_CREDENTIALS=
+ENVEOF
+          )
+          savefile /home/dreamads/backend .env "$ENV_CONTENT" | jq -c '{status,errors}' || true
+          echo
+
+          echo "===== 2. Verify .env written ====="
+          getfile /home/dreamads/backend .env | jq -r '.data.content // empty' | head -c 400 || true
+          echo
+
+          echo "===== 3. Check permissions ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend" \
+            | jq -r '.data[] | select(.file=="dist" or .file=="server.js" or .file=="package.json" or .file=="node_modules") | "\(.file) type=\(.type) mode=\(.nicemode) uid=\(.uid)"' || true
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Fdist" \
+            | jq -r '.data[] | select(.file=="server.js") | "\(.file) mode=\(.nicemode) size=\(.humansize)"' || true
+          echo
+
+          echo "===== 4. Upload fresh package.json + package-lock.json ====="
+          curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/upload_files" \
+            -F "dir=/home/dreamads/backend" -F overwrite=1 \
+            -F "file=@backend/package.json;filename=package.json" \
+            -F "file=@backend/package-lock.json;filename=package-lock.json" \
+            | jq -c '{status, data}' || true
+          echo
+
+          echo "===== 5. Upload fresh dist/ tree ====="
+          # upload dist files preserving structure via recursive approach
+          cd backend/dist
+          find . -type f | while read -r f; do
+            rel="${f#./}"
+            rdir=$(dirname "$rel")
+            target="/home/dreamads/backend/dist"
+            if [ "$rdir" != "." ]; then
+              target="/home/dreamads/backend/dist/$rdir"
+              # mkdir -p via ensure (Fileman mkdir may fail if exists - ignore)
+              edir=$(printf '%s' "$(dirname "$target")" | jq -sRr @uri)
+              ename=$(printf '%s' "$(basename "$target")" | jq -sRr @uri)
+              curl -sS -H "$AUTH" "$BASE/json-api/cpanel?api.version=2&cpanel_jsonapi_module=Fileman&cpanel_jsonapi_func=mkdir&dir=${edir}&name=${ename}" >/dev/null 2>&1 || true
+            fi
+            resp=$(curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/upload_files" \
+              -F "dir=$target" -F overwrite=1 \
+              -F "file=@${f};filename=$(basename "$f")" || true)
+            st=$(echo "$resp" | jq -r '.status // 0' 2>/dev/null || echo 0)
+            if [ "$st" != "1" ]; then
+              echo "UPLOAD FAIL: $target/$(basename "$f") -> $(echo "$resp" | head -c 200)"
+            else
+              echo "ok: $target/$(basename "$f")"
+            fi
+          done
+          cd ../..
+          echo
+
+          echo "===== 6. Verify dist/server.js ====="
+          getfile /home/dreamads/backend/dist server.js | jq -c '{status, len: (.data.content | length)}' || true
+          echo
+
+          echo "===== 7. Touch restart.txt + poll health ====="
+          savefile /home/dreamads/backend/tmp restart.txt "" | jq -c '{status}' || true
+          for i in $(seq 1 25); do
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' --max-time 12 "https://dreamads.in/api/health" || echo 000)
+            body=$(head -c 120 /tmp/h.json 2>/dev/null || true)
+            echo "poll $i: http=$code $body"
+            if [ "$code" = "200" ]; then
+              echo "BACKEND UP"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "STILL DOWN after polls"
+          exit 1
