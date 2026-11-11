@@ -1,0 +1,72 @@
+name: Read backend logs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Fetch key files
+        env:
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          AUTH="Authorization: cpanel dreamads:${CPANEL_API_TOKEN}"
+          BASE="https://server.shodns.in:2083"
+
+          getfile() {
+            local dir="$1" file="$2"
+            local edir efile
+            edir=$(printf '%s' "$dir" | jq -sRr @uri)
+            efile=$(printf '%s' "$file" | jq -sRr @uri)
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/get_file_content?dir=${edir}&file=${efile}"
+          }
+
+          echo "===== package.json ====="
+          getfile /home/dreamads/backend package.json
+          echo
+          echo "===== stderr.log ====="
+          getfile /home/dreamads/backend stderr.log
+          echo
+          echo "===== backend/tmp listing ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Ftmp"
+          echo
+          echo "===== backend/dist listing ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Fdist"
+          echo
+          echo "===== LiteSpeed vhost etc/dreamads.in ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fetc%2Fdreamads.in"
+          echo
+          echo "===== nodevenv ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fnodevenv"
+          echo
+          echo "===== Try lsnode/app logs in tmp ====="
+          for f in lsnode.log node.log app.log out.log error.log; do
+            r=$(getfile /home/dreamads/backend/tmp "$f")
+            if echo "$r" | grep -q '"status":1'; then
+              echo "--- tmp/$f ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -c 6000
+              echo
+            fi
+          done
+          # stderr variants
+          for f in stderr.log error.log; do
+            r=$(getfile /home/dreamads "$f")
+            if echo "$r" | grep -q '"status":1'; then
+              echo "--- /home/dreamads/$f ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -c 6000
+              echo
+            fi
+          done
+
+          echo "===== LiteSpeed error log (etc/dreamads.in) ====="
+          for f in error_log error.log lsnode.log stderr.log; do
+            r=$(getfile /home/dreamads/etc/dreamads.in "$f")
+            if echo "$r" | grep -q '"status":1'; then
+              echo "--- etc/dreamads.in/$f ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -c 8000
+              echo
+            fi
+          done
