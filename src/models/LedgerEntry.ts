@@ -3,7 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export type WalletType = 'video' | 'social';
 export type TxType = 'credit' | 'debit';
 export type TxReason =
-  | 'watch_reward' | 'task_reward' | 'referral_reward' | 'referral_commission'
+  | 'watch_reward' | 'task_reward' | 'referral_reward' | 'referral_commission' | 'level_up_bonus'
   | 'withdrawal' | 'deposit' | 'voucher_purchase' | 'chat_access'
   | 'admin_adjustment' | 'signup_bonus' | 'recharge';
 
@@ -31,7 +31,7 @@ const ledgerSchema = new Schema<ILedgerEntry>(
     balanceAfter: { type: Number, required: true },
     reason: {
       type: String,
-      enum: ['watch_reward', 'task_reward', 'referral_reward', 'referral_commission', 'withdrawal', 'deposit', 'voucher_purchase', 'chat_access', 'admin_adjustment', 'signup_bonus', 'recharge'],
+      enum: ['watch_reward', 'task_reward', 'referral_reward', 'referral_commission', 'level_up_bonus', 'withdrawal', 'deposit', 'voucher_purchase', 'chat_access', 'admin_adjustment', 'signup_bonus', 'recharge'],
       required: true,
     },
     refModel: { type: String },

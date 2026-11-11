@@ -24,7 +24,7 @@ import { VoucherRedemption } from '../../models/VoucherRedemption';
 import { Category } from '../../models/Category';
 import { Banner } from '../../models/Banner';
 import { AdPlacement } from '../../models/AdPlacement';
-import { ReferralConfig } from '../../models/ReferralConfig';
+import { ReferralConfig, referralConfigJson } from '../../models/ReferralConfig';
 import { Setting } from '../../models/Setting';
 import { Notification } from '../../models/Notification';
 import { applyLedger, getBalances } from '../../services/ledger.service';
@@ -1579,7 +1579,7 @@ router.get(
   asyncHandler(async (_req, res) => {
     let config = await ReferralConfig.findOne();
     if (!config) config = await ReferralConfig.create({ levelRewards: [] });
-    res.json({ success: true, data: config });
+    res.json({ success: true, data: referralConfigJson(config) });
   })
 );
 
@@ -1593,6 +1593,12 @@ router.put(
       .object({
         maxLevels: z.number().min(1).max(10),
         levelRewards: z.array(z.object({ level: z.number().min(1).max(10), coins: z.number().min(0), wallet: z.enum(['video', 'social']) })),
+        levelTargets: z
+          .array(z.object({ level: z.number().min(1).max(10), target: z.number().min(1).max(1_000_000) }))
+          .optional(),
+        levelUpBonuses: z
+          .array(z.object({ level: z.number().min(1).max(10), coins: z.number().min(0), wallet: z.enum(['video', 'social']) }))
+          .optional(),
         dailyJoinLimit: z.number().min(0),
         commissionEnabled: z.boolean(),
         commissionPercent: z.number().min(0).max(100),
@@ -1602,7 +1608,7 @@ router.put(
     if (!config) config = new ReferralConfig();
     Object.assign(config, data);
     await config.save();
-    res.json({ success: true, data: config });
+    res.json({ success: true, data: referralConfigJson(config) });
   })
 );
 

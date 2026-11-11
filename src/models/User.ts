@@ -21,6 +21,8 @@ export interface IUser extends Document {
   lastLoginAt?: Date;
   membershipStatus: 'none' | 'pending' | 'active';
   membershipActiveAt?: Date;
+  teamCount: number;
+  levelUpsReceived: { level: number; coins: number; receivedAt: Date }[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,6 +47,8 @@ const userSchema = new Schema<IUser>(
     lastLoginAt: { type: Date },
     membershipStatus: { type: String, enum: ['none', 'pending', 'active'], default: 'none', index: true },
     membershipActiveAt: { type: Date },
+    teamCount: { type: Number, default: 0, min: 0 },
+    levelUpsReceived: [{ level: Number, coins: Number, receivedAt: Date }],
   },
   { timestamps: true }
 );

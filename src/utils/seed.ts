@@ -7,7 +7,7 @@ import { Wallet } from '../models/Wallet';
 import { Category } from '../models/Category';
 import { Video } from '../models/Video';
 import { Task } from '../models/Task';
-import { ReferralConfig } from '../models/ReferralConfig';
+import { ReferralConfig, DEFAULT_LEVEL_TARGETS, DEFAULT_LEVEL_UP_BONUSES } from '../models/ReferralConfig';
 import { Banner } from '../models/Banner';
 import { Setting } from '../models/Setting';
 import { Voucher } from '../models/Voucher';
@@ -95,16 +95,25 @@ async function seed() {
     ]);
   }
 
-  // Referral config
+  // Referral config (client's 10-level income table — fully dynamic via admin API)
   await ReferralConfig.findOneAndUpdate(
     {},
     {
       maxLevels: 10,
       levelRewards: [
-        { level: 1, coins: 100, wallet: 'social' },
-        { level: 2, coins: 50, wallet: 'social' },
-        { level: 3, coins: 25, wallet: 'social' },
+        { level: 1, coins: 20, wallet: 'social' },
+        { level: 2, coins: 30, wallet: 'social' },
+        { level: 3, coins: 40, wallet: 'social' },
+        { level: 4, coins: 50, wallet: 'social' },
+        { level: 5, coins: 70, wallet: 'social' },
+        { level: 6, coins: 90, wallet: 'social' },
+        { level: 7, coins: 120, wallet: 'social' },
+        { level: 8, coins: 160, wallet: 'social' },
+        { level: 9, coins: 200, wallet: 'social' },
+        { level: 10, coins: 269, wallet: 'social' },
       ],
+      levelTargets: DEFAULT_LEVEL_TARGETS,
+      levelUpBonuses: DEFAULT_LEVEL_UP_BONUSES,
       dailyJoinLimit: 100,
       commissionEnabled: false,
       commissionPercent: 0,
