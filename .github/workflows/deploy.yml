@@ -57,16 +57,16 @@ jobs:
 
           echo "===== STEP A: Write production .env ====="
           ENV_CONTENT="PORT=5000
-MONGODB_URI=mongodb+srv://Ramesh0329:XRwEUdXA1jng79Bh@cluster0.9p3djjh.mongodb.net/dream-ads?retryWrites=true&w=majority
-JWT_ACCESS_SECRET=7Ve5exd8vpiYZC0sCkIlj9DUoy4zsHmt3K2ImAIq1Ghf8sxZAqt79SbMI9kdqwRx
-JWT_REFRESH_SECRET=fFj1F5oA0YWiXX473HmKHr0ZR-XsiS2Mi5ARxy8xn04pyN4g2cmUF4okLXVjI_UA
-JWT_ACCESS_EXPIRY=15m
-JWT_REFRESH_EXPIRY=30d
-NODE_ENV=production
-CORS_ORIGIN=http://localhost:5173,http://localhost:3100,http://localhost:8081,https://dreamads.in,https://www.dreamads.in,http://dreamads.in,https://admin.dreamads.in,http://admin.dreamads.in
-UPLOAD_DIR=uploads
-FIREBASE_PROJECT_ID=
-GOOGLE_APPLICATION_CREDENTIALS="
+          MONGODB_URI=mongodb+srv://Ramesh0329:XRwEUdXA1jng79Bh@cluster0.9p3djjh.mongodb.net/dream-ads?retryWrites=true&w=majority
+          JWT_ACCESS_SECRET=7Ve5exd8vpiYZC0sCkIlj9DUoy4zsHmt3K2ImAIq1Ghf8sxZAqt79SbMI9kdqwRx
+          JWT_REFRESH_SECRET=fFj1F5oA0YWiXX473HmKHr0ZR-XsiS2Mi5ARxy8xn04pyN4g2cmUF4okLXVjI_UA
+          JWT_ACCESS_EXPIRY=15m
+          JWT_REFRESH_EXPIRY=30d
+          NODE_ENV=production
+          CORS_ORIGIN=http://localhost:5173,http://localhost:3100,http://localhost:8081,https://dreamads.in,https://www.dreamads.in,http://dreamads.in,https://admin.dreamads.in,http://admin.dreamads.in
+          UPLOAD_DIR=uploads
+          FIREBASE_PROJECT_ID=
+          GOOGLE_APPLICATION_CREDENTIALS="
           savefile /home/dreamads/backend .env "$ENV_CONTENT" | jq -c '{status,errors}' || true
           echo
 
