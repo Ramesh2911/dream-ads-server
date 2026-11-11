@@ -1,0 +1,117 @@
+name: Restart backend on cPanel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restart via cPanel API
+        env:
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          HOST="server.shodns.in:2083"
+          USER="dreamads"
+          AUTH="Authorization: cpanel ${USER}:${CPANEL_API_TOKEN}"
+          BASE="https://${HOST}"
+
+          echo "== WebApp list =="
+          curl -sS -H "$AUTH" "$BASE/execute/WebApp/list?api.version=1" | tee webapp-list.json || true
+          echo
+
+          echo "== PassengerApps list =="
+          curl -sS -H "$AUTH" "$BASE/execute/PassengerApps/list_applications?api.version=1" | tee passenger-list.json || true
+          echo
+
+          APP_NAMES=$(python3 - <<'PY'
+          import json,sys
+          names=set()
+          for f in ("webapp-list.json","passenger-list.json"):
+              try:
+                  d=json.load(open(f))
+              except Exception:
+                  continue
+              data=(d.get("data") or d)
+              if isinstance(data,dict):
+                  for k in ("applications","apps","app_list"):
+                      if k in data and isinstance(data[k],list):
+                          data=data[k]
+                          break
+                  else:
+                      data=[data] if "name" in data else []
+              if isinstance(data,list):
+                  for a in data:
+                      if isinstance(a,dict) and a.get("name"):
+                          names.add(a["name"])
+                      elif isinstance(a,str):
+                          names.add(a)
+          # also try nested result forms
+          for f in ("webapp-list.json","passenger-list.json"):
+              try:
+                  d=json.load(open(f))
+              except Exception:
+                  continue
+              def walk(o):
+                  if isinstance(o,dict):
+                      if "name" in o and isinstance(o["name"],str) and any(x in o["name"].lower() for x in ("backend","dream","app","node")):
+                          names.add(o["name"])
+                      for v in o.values(): walk(v)
+                  elif isinstance(o,list):
+                      for v in o: walk(v)
+              walk(d)
+          print("\n".join(sorted(names)))
+          PY
+          )
+          echo "Discovered app names:"
+          echo "$APP_NAMES"
+
+          restarted=0
+          for name in $APP_NAMES backend dream-ads dreamads app; do
+            echo "== WebApp/restart name=$name =="
+            resp=$(curl -sS -H "$AUTH" "$BASE/execute/WebApp/restart?api.version=1&name=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$name")" || true)
+            echo "$resp"
+            if echo "$resp" | grep -q '"status":1\|"status": 1'; then
+              echo "RESTART OK via WebApp: $name"
+              restarted=1
+              break
+            fi
+          done
+
+          if [ "$restarted" != "1" ]; then
+            for name in $APP_NAMES backend dream-ads dreamads; do
+              echo "== PassengerApps restart_application name=$name =="
+              resp=$(curl -sS -H "$AUTH" "$BASE/json-api/cpanel?api.version=2&cpanel_jsonapi_module=PassengerApps&cpanel_jsonapi_func=restart_application&app=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "$name")" || true)
+              echo "$resp"
+              if echo "$resp" | grep -q '"status":1\|success'; then
+                echo "RESTART OK via PassengerApps: $name"
+                restarted=1
+                break
+              fi
+            done
+          fi
+
+          if [ "$restarted" != "1" ]; then
+            echo "== Touch Passenger restart.txt via Fileman =="
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/mkdir?dir=/home/dreamads/backend&name=tmp" || true
+            # save empty restart.txt (Passenger touch-file convention)
+            curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/save_file_content" \
+              -F "dir=/home/dreamads/backend/tmp" -F "file=restart.txt" -F "content=" || true
+            echo "touched restart.txt (Passenger may respawn on next request)"
+          fi
+
+          echo "== Wait for health =="
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 10 "https://dreamads.in/api/health" || true)
+            body=$(cat /tmp/health.json 2>/dev/null || true)
+            echo "attempt $i: http=$code $body"
+            if [ "$code" = "200" ] && echo "$body" | grep -q '"status": *"ok"\|"status":"ok"'; then
+              echo "BACKEND UP"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "BACKEND STILL DOWN"
+          exit 1

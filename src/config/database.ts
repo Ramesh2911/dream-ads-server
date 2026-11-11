@@ -25,7 +25,7 @@ export async function connectDB() {
       maxPoolSize: 10,
     });
     const dbName = mongoose.connection.name;
-    logger.info(`MongoDB connected${isLocal ? ' (local)' : ''} → db="${dbName}"`);
+    logger.info(`MongoDB connected${isLocal ? ' (local)' : ''} -> db="${dbName}"`);
   } catch (err) {
     logger.error({ err: (err as Error).message, uri: maskUri(env.mongoUri) }, 'MongoDB connection failed');
     logger.error('Checks: 1) Atlas Network Access IP allowed  2) DB user/password  3) URI path ends with /dream-ads');
