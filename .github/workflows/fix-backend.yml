@@ -25,38 +25,42 @@ jobs:
           }
 
           echo "===== dist/server.js head ====="
-          getfile /home/dreamads/backend/dist server.js | jq -r '.data.content // .errors // empty' | head -c 500
+          getfile /home/dreamads/backend/dist server.js > /tmp/sj.json
+          jq -r '.data.content // empty' /tmp/sj.json > /tmp/sj.txt 2>/dev/null || true
+          head -c 400 /tmp/sj.txt || true
           echo
           echo "===== node_modules exists? ====="
-          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Fnode_modules" | head -c 500
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Fnode_modules" > /tmp/nm.json
+          head -c 400 /tmp/nm.json || true
           echo
-          echo "===== node_modules/express? ====="
-          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend%2Fnode_modules%2Fexpress" | head -c 300
+          echo "===== .env keys ====="
+          getfile /home/dreamads/backend .env > /tmp/env.json
+          jq -r 'if .status==1 then (.data.content | split("\n") | map(select(length>0) | if test("SECRET|PASSWORD|URI|KEY|TOKEN") then (split("=")[0] + "=***") else . end) | join("\n")) else ((.errors // []) | tostring) end' /tmp/env.json || true
           echo
-          echo "===== .env exists? ====="
-          getfile /home/dreamads/backend .env | jq -r 'if .status==1 then (.data.content | split("\n") | map(if test("SECRET|PASSWORD|URI|KEY") then (split("=")[0] + "=***") else . end) | join("\n")) else (.errors // empty) end'
-          echo
-          echo "===== Touch tmp/restart.txt again ====="
+          echo "===== Touch tmp/restart.txt ====="
           curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/save_file_content" \
-            -F "dir=/home/dreamads/backend/tmp" -F "file=restart.txt" -F "content=" | jq -c '{status,errors}'
+            -F "dir=/home/dreamads/backend/tmp" -F "file=restart.txt" -F "content=" | jq -c '{status,errors}' || true
           echo
           echo "===== Trigger spawn via health requests ====="
           for i in 1 2 3 4 5; do
-            code=$(curl -s -o /tmp/h.json -w '%{http_code}' --max-time 15 "https://dreamads.in/api/health" || true)
-            echo "req $i: http=$code $(head -c 120 /tmp/h.json 2>/dev/null)"
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' --max-time 15 "https://dreamads.in/api/health" || echo "000")
+            body=$(head -c 150 /tmp/h.json 2>/dev/null || true)
+            echo "req $i: http=$code $body"
             sleep 3
           done
           echo
-          echo "===== stderr.log after spawn attempts ====="
-          getfile /home/dreamads/backend stderr.log | jq -r '.data.content // empty' | tail -c 4000
+          echo "===== stderr.log after spawn ====="
+          getfile /home/dreamads/backend stderr.log > /tmp/sl.json
+          jq -r '.data.content // empty' /tmp/sl.json > /tmp/sl.txt 2>/dev/null || true
+          tail -c 3500 /tmp/sl.txt || true
           echo
-          echo "===== stderr.log mtime ====="
-          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend" | jq -r '.data[] | select(.file=="stderr.log") | {mtime,size,nicemode}'
+          echo "===== stderr.log meta ====="
+          curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=%2Fhome%2Fdreamads%2Fbackend" | jq -r '.data[] | select(.file=="stderr.log") | {mtime,size,nicemode}' || true
           echo
           echo "===== Final health ====="
           for i in 1 2 3 4 5 6; do
-            code=$(curl -s -o /tmp/h2.json -w '%{http_code}' --max-time 15 "https://dreamads.in/api/health" || true)
-            body=$(head -c 200 /tmp/h2.json 2>/dev/null)
+            code=$(curl -s -o /tmp/h2.json -w '%{http_code}' --max-time 15 "https://dreamads.in/api/health" || echo "000")
+            body=$(head -c 200 /tmp/h2.json 2>/dev/null || true)
             echo "final $i: http=$code $body"
             if [ "$code" = "200" ]; then echo "BACKEND UP"; exit 0; fi
             sleep 5
