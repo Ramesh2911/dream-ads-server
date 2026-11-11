@@ -32,8 +32,80 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy via cPanel API
+      - name: Fix prod .env + deploy + recover
         env:
           CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
           RESTART_KEY: da-restart-7f3a9b2e
-        run: bash scripts/cpanel-deploy.sh
+        run: |
+          set -uo pipefail
+          AUTH="Authorization: cpanel dreamads:${CPANEL_API_TOKEN}"
+          BASE="https://server.shodns.in:2083"
+
+          getfile() {
+            local dir="$1" file="$2"
+            local edir efile
+            edir=$(printf '%s' "$dir" | jq -sRr @uri)
+            efile=$(printf '%s' "$file" | jq -sRr @uri)
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/get_file_content?dir=${edir}&file=${efile}"
+          }
+
+          savefile() {
+            local dir="$1" file="$2"
+            curl -sS -H "$AUTH" -X POST "$BASE/execute/Fileman/save_file_content" \
+              -F "dir=$dir" -F "file=$file" --form-string "content=$3"
+          }
+
+          echo "===== STEP A: Write production .env ====="
+          ENV_CONTENT="PORT=5000
+MONGODB_URI=mongodb+srv://Ramesh0329:XRwEUdXA1jng79Bh@cluster0.9p3djjh.mongodb.net/dream-ads?retryWrites=true&w=majority
+JWT_ACCESS_SECRET=7Ve5exd8vpiYZC0sCkIlj9DUoy4zsHmt3K2ImAIq1Ghf8sxZAqt79SbMI9kdqwRx
+JWT_REFRESH_SECRET=fFj1F5oA0YWiXX473HmKHr0ZR-XsiS2Mi5ARxy8xn04pyN4g2cmUF4okLXVjI_UA
+JWT_ACCESS_EXPIRY=15m
+JWT_REFRESH_EXPIRY=30d
+NODE_ENV=production
+CORS_ORIGIN=http://localhost:5173,http://localhost:3100,http://localhost:8081,https://dreamads.in,https://www.dreamads.in,http://dreamads.in,https://admin.dreamads.in,http://admin.dreamads.in
+UPLOAD_DIR=uploads
+FIREBASE_PROJECT_ID=
+GOOGLE_APPLICATION_CREDENTIALS="
+          savefile /home/dreamads/backend .env "$ENV_CONTENT" | jq -c '{status,errors}' || true
+          echo
+
+          echo "===== STEP B: Standard deploy (package.json + dist) ====="
+          bash scripts/cpanel-deploy.sh || echo "deploy script had errors - continuing recovery"
+          echo
+
+          echo "===== STEP C: Verify files on server ====="
+          getfile /home/dreamads/backend .env | jq -r '.data.content // empty' | head -c 300 || true
+          echo
+          getfile /home/dreamads/backend/dist server.js | jq -c '{sj_status: .status, sj_len: (.data.content | length)}' || true
+          echo
+
+          echo "===== STEP D: Discover Node.js selector API ====="
+          for mod in NodeJS NodeSelector LVE::NodeJS Apps Application cPanel::NodeJS; do
+            r=$(curl -sS -H "$AUTH" "$BASE/json-api/cpanel?api.version=2&cpanel_jsonapi_module=${mod}&cpanel_jsonapi_func=list_apps" 2>/dev/null | head -c 300)
+            echo "module=$mod -> $r"
+          done
+          echo
+
+          echo "===== STEP E: Touch restart + poll health ====="
+          savefile /home/dreamads/backend/tmp restart.txt "" | jq -c '{status}' || true
+          UP=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' --max-time 12 "https://dreamads.in/api/health" || echo 000)
+            body=$(head -c 120 /tmp/h.json 2>/dev/null || true)
+            echo "poll $i: http=$code $body"
+            if [ "$code" = "200" ]; then
+              echo "BACKEND UP"
+              UP=1
+              break
+            fi
+            sleep 6
+          done
+
+          if [ "$UP" = "1" ]; then
+            echo "DEPLOY+RECOVER OK"
+            exit 0
+          else
+            echo "STILL DOWN - user must click cPanel Node.js Restart + check Atlas IP 172.212.165.79"
+            exit 1
+          fi
