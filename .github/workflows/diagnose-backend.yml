@@ -1,0 +1,69 @@
+name: Diagnose backend on cPanel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Read logs and app state via Fileman
+        env:
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          HOST="server.shodns.in:2083"
+          USER="dreamads"
+          AUTH="Authorization: cpanel ${USER}:${CPANEL_API_TOKEN}"
+          BASE="https://${HOST}"
+
+          fm_list() {
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/list_files?showhiddenfiles=1&dir=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")" || true
+          }
+          fm_get() {
+            curl -sS -H "$AUTH" "$BASE/execute/Fileman/get_file_content?dir=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")&file=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[2],safe=''))" "$2")" || true
+          }
+
+          echo "===== /home/dreamads ====="
+          fm_list "/home/dreamads"
+          echo
+          echo "===== /home/dreamads/backend ====="
+          fm_list "/home/dreamads/backend"
+          echo
+          echo "===== /home/dreamads/logs ====="
+          fm_list "/home/dreamads/logs"
+          echo
+          echo "===== backend/logs ====="
+          fm_list "/home/dreamads/backend/logs"
+          echo
+          echo "===== backend/package.json ====="
+          fm_get "/home/dreamads/backend" "package.json"
+          echo
+          echo "===== try common log files ====="
+          for f in error.log error_log backend.log app.log out.log nohup.out lsnode.log; do
+            for d in /home/dreamads/backend /home/dreamads/backend/logs /home/dreamads/logs /home/dreamads; do
+              resp=$(fm_get "$d" "$f")
+              if echo "$resp" | grep -q '"status":1'; then
+                echo "--- $d/$f ---"
+                echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print((d.get('data') or {}).get('content','')[-8000:])" 2>/dev/null || echo "$resp" | head -c 4000
+                echo
+              fi
+            done
+          done
+
+          echo "===== LiteSpeed error log candidates ====="
+          fm_list "/home/dreamads/.error.log"
+          # cPanel error logs often at ~/logs/
+          for f in error.log error_log; do
+            resp=$(fm_get "/home/dreamads/logs" "$f")
+            if echo "$resp" | grep -q '"status":1'; then
+              echo "--- /home/dreamads/logs/$f (tail) ---"
+              echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print((d.get('data') or {}).get('content','')[-8000:])" 2>/dev/null || true
+            fi
+          done
+
+          echo "===== Check app.vhost / node config ====="
+          fm_list "/home/dreamads/conf"
+          fm_list "/home/dreamads/.nodejs"
+          fm_list "/home/dreamads/etc"
