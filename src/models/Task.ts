@@ -10,6 +10,7 @@ export interface ITask extends Document {
   rewardWallet: 'video' | 'social';
   eligibility: { minLevel?: number; requiresKyc?: boolean; maxSubmissions?: number };
   status: 'draft' | 'active' | 'paused' | 'completed';
+  isDaily: boolean;
   totalSlots?: number;
   filledSlots: number;
   startsAt?: Date;
@@ -33,6 +34,7 @@ const taskSchema = new Schema<ITask>(
       maxSubmissions: Number,
     },
     status: { type: String, enum: ['draft', 'active', 'paused', 'completed'], default: 'draft' },
+    isDaily: { type: Boolean, default: false },
     totalSlots: Number,
     filledSlots: { type: Number, default: 0 },
     startsAt: Date,

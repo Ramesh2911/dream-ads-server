@@ -27,6 +27,8 @@ import { AdPlacement } from '../../models/AdPlacement';
 import { ReferralConfig, referralConfigJson } from '../../models/ReferralConfig';
 import { Setting } from '../../models/Setting';
 import { Notification } from '../../models/Notification';
+import { AppUpdate } from '../../models/AppUpdate';
+import { Announcement } from '../../models/Announcement';
 import { applyLedger, getBalances } from '../../services/ledger.service';
 import { notify, broadcast } from '../../services/notify.service';
 import { asyncHandler, ApiError } from '../../middleware/error';
@@ -925,6 +927,7 @@ router.post(
         rewardCoins: z.number().min(1),
         rewardWallet: z.enum(['video', 'social']).default('social'),
         totalSlots: z.number().optional(),
+        isDaily: z.boolean().optional(),
         status: z.enum(['draft', 'active', 'paused']).default('draft'),
         eligibility: z
           .object({ minLevel: z.number().int().min(0).optional(), requiresKyc: z.boolean().optional(), maxSubmissions: z.number().int().min(1).optional() })
@@ -1089,7 +1092,12 @@ router.put(
     const submission = await TaskSubmission.findById(req.params.id).populate('task');
     if (!submission) throw new ApiError(404, 'Submission not found');
     if (submission.status !== 'pending') throw new ApiError(400, 'Already reviewed');
-    const task = submission.task as unknown as { title?: string; rewardCoins: number; rewardWallet: 'video' | 'social' };
+    const task = submission.task as unknown as {
+      title?: string;
+      rewardCoins: number;
+      rewardWallet: 'video' | 'social';
+      isDaily?: boolean;
+    };
 
     submission.status = status;
     submission.reviewedBy = req.admin!._id;
@@ -1108,6 +1116,47 @@ router.put(
         refId: submission._id,
         createdBy: req.admin!._id,
       });
+    }
+
+    // Daily goal: when the last daily task of the day is approved, credit the reward once
+    if (status === 'approved' && task.isDaily) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const dailyTasks = await Task.find({ isDaily: true, status: 'active' }).select('_id');
+      if (dailyTasks.length > 0) {
+        const ids = dailyTasks.map((t) => t._id);
+        const [approvedDistinct, claimed, rewardSetting] = await Promise.all([
+          TaskSubmission.distinct('task', {
+            user: submission.user,
+            status: 'approved',
+            createdAt: { $gte: startOfDay },
+            task: { $in: ids },
+          }),
+          LedgerEntry.findOne({ user: submission.user, reason: 'daily_goal', createdAt: { $gte: startOfDay } }).select('_id'),
+          Setting.findOne({ key: 'dailyGoalReward' }).lean(),
+        ]);
+        const reward = Number(rewardSetting?.value ?? 0);
+        if (!claimed && reward > 0 && approvedDistinct.length >= ids.length) {
+          await applyLedger({
+            userId: submission.user,
+            wallet: 'social',
+            type: 'credit',
+            amount: reward,
+            reason: 'daily_goal',
+            refModel: 'TaskSubmission',
+            refId: submission._id,
+            note: `Daily goal: all ${ids.length} daily task(s) approved`,
+            createdBy: req.admin!._id,
+          });
+          notify({
+            userId: submission.user,
+            type: 'reward',
+            title: 'Daily goal completed 🎯',
+            body: `All of today's daily tasks are approved — +${reward} coins credited to your social passbook!`,
+            data: { reward },
+          });
+        }
+      }
     }
     notify({
       userId: submission.user,
@@ -1999,6 +2048,20 @@ const settingsSchema = z
     usdtQr: z.string().max(120).optional(),
     usdtAddress: z.string().max(120).optional(),
     usdtMin: z.coerce.number().min(0).max(1_000_000).optional(),
+    socialLinks: z
+      .array(
+        z.object({
+          platform: z.string().trim().min(1).max(40),
+          url: z
+            .string()
+            .max(500)
+            .refine((v) => /^https?:\/\/\S+$/.test(v), 'Social link must be a valid http(s) URL'),
+        })
+      )
+      .max(10)
+      .optional(),
+    dailyGoalReward: z.coerce.number().int().min(0).max(100_000).optional(),
+    landingPdf: z.string().max(120).optional(),
   })
   .strict();
 
@@ -2040,6 +2103,50 @@ router.post(
     if (previous && typeof previous.value === 'string' && /^[\w.-]{1,120}$/.test(previous.value)) {
       try {
         fs.unlinkSync(path.join(paymentQrRoot, previous.value));
+      } catch {
+        /* old file may already be gone */
+      }
+    }
+    res.status(201).json({ success: true, data: { key, value: file.filename } });
+  })
+);
+
+// ---- Landing page PDF upload ----
+const landingPdfRoot = path.resolve(env.uploadDir, 'landing');
+fs.mkdirSync(landingPdfRoot, { recursive: true });
+
+const pdfStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, landingPdfRoot),
+  filename: (_req, file, cb) => {
+    const safe = file.originalname.replace(/[^\w.-]+/g, '_').slice(-80);
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+  },
+});
+
+const pdfUpload = multer({
+  storage: pdfStorage,
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') return cb(new ApiError(400, 'File must be a PDF'));
+    cb(null, true);
+  },
+});
+
+router.post(
+  '/settings/landing-pdf',
+  requireAdminAuth,
+  requirePermission('settings.manage'),
+  pdfUpload.single('file'),
+  audit('settings.update', 'Setting'),
+  asyncHandler(async (req, res) => {
+    const file = req.file;
+    if (!file) throw new ApiError(400, 'PDF file is required');
+    const key = 'landingPdf';
+    const previous = await Setting.findOne({ key }).lean();
+    await Setting.findOneAndUpdate({ key }, { key, value: file.filename }, { upsert: true });
+    if (previous && typeof previous.value === 'string' && /^[\w.-]{1,120}$/.test(previous.value)) {
+      try {
+        fs.unlinkSync(path.join(landingPdfRoot, previous.value));
       } catch {
         /* old file may already be gone */
       }
@@ -2238,6 +2345,115 @@ router.post(
       sentBy: req.admin?.email,
     });
     res.status(201).json({ success: true, message: `Sent to ${recipients} user${recipients === 1 ? '' : 's'}`, data: { recipients } });
+  })
+);
+
+// ---- App updates (in-app "What's new" list) ----
+const appUpdateSchema = z.object({
+  title: z.string().trim().min(2).max(120),
+  content: z.string().trim().min(2).max(2000),
+  priority: z.coerce.number().int().min(0).max(100).optional(),
+  isActive: z.boolean().optional(),
+});
+
+router.get(
+  '/app-updates',
+  requireAdminAuth,
+  requirePermission('content.read'),
+  asyncHandler(async (_req, res) => {
+    const items = await AppUpdate.find().sort({ priority: -1, createdAt: -1 }).limit(100).lean();
+    res.json({ success: true, data: items });
+  })
+);
+
+router.post(
+  '/app-updates',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('app_update.create', 'AppUpdate'),
+  asyncHandler(async (req, res) => {
+    const data = appUpdateSchema.parse(req.body);
+    const item = await AppUpdate.create(data);
+    res.status(201).json({ success: true, data: item });
+  })
+);
+
+router.put(
+  '/app-updates/:id',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('app_update.update', 'AppUpdate'),
+  asyncHandler(async (req, res) => {
+    const data = appUpdateSchema.partial().parse(req.body);
+    const item = await AppUpdate.findByIdAndUpdate(req.params.id, data, { new: true });
+    if (!item) throw new ApiError(404, 'Update not found');
+    res.json({ success: true, data: item });
+  })
+);
+
+router.delete(
+  '/app-updates/:id',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('app_update.delete', 'AppUpdate'),
+  asyncHandler(async (req, res) => {
+    const item = await AppUpdate.findByIdAndDelete(req.params.id);
+    if (!item) throw new ApiError(404, 'Update not found');
+    res.json({ success: true, data: { _id: item._id } });
+  })
+);
+
+// ---- Announcements (scrolling ticker on app home) ----
+const announcementSchema = z.object({
+  text: z.string().trim().min(2).max(300),
+  priority: z.coerce.number().int().min(0).max(100).optional(),
+  isActive: z.boolean().optional(),
+});
+
+router.get(
+  '/announcements',
+  requireAdminAuth,
+  requirePermission('content.read'),
+  asyncHandler(async (_req, res) => {
+    const items = await Announcement.find().sort({ priority: -1, createdAt: -1 }).limit(100).lean();
+    res.json({ success: true, data: items });
+  })
+);
+
+router.post(
+  '/announcements',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('announcement.create', 'Announcement'),
+  asyncHandler(async (req, res) => {
+    const data = announcementSchema.parse(req.body);
+    const item = await Announcement.create(data);
+    res.status(201).json({ success: true, data: item });
+  })
+);
+
+router.put(
+  '/announcements/:id',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('announcement.update', 'Announcement'),
+  asyncHandler(async (req, res) => {
+    const data = announcementSchema.partial().parse(req.body);
+    const item = await Announcement.findByIdAndUpdate(req.params.id, data, { new: true });
+    if (!item) throw new ApiError(404, 'Announcement not found');
+    res.json({ success: true, data: item });
+  })
+);
+
+router.delete(
+  '/announcements/:id',
+  requireAdminAuth,
+  requirePermission('content.manage'),
+  audit('announcement.delete', 'Announcement'),
+  asyncHandler(async (req, res) => {
+    const item = await Announcement.findByIdAndDelete(req.params.id);
+    if (!item) throw new ApiError(404, 'Announcement not found');
+    res.json({ success: true, data: { _id: item._id } });
   })
 );
 

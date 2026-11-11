@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import { Task } from '../../models/Task';
 import { TaskSubmission } from '../../models/TaskSubmission';
 import { LedgerEntry } from '../../models/LedgerEntry';
+import { Setting } from '../../models/Setting';
 import { AdminUser } from '../../models/AdminUser';
 import { env } from '../../config/env';
 import { asyncHandler, ApiError } from '../../middleware/error';
@@ -67,19 +68,57 @@ router.get(
       Task.countDocuments(filter),
     ]);
     const userId = req.user!._id;
-    const submissions = await TaskSubmission.find({ user: userId, task: { $in: tasks.map((t) => t._id) } });
+    const submissions = await TaskSubmission.find({ user: userId, task: { $in: tasks.map((t) => t._id) } }).sort({
+      createdAt: -1,
+    });
     const submittedMap = new Map(submissions.map((s) => [String(s.task), s]));
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
     const data = tasks.map((t) => {
       const sub = submittedMap.get(String(t._id));
+      const submittedToday = !!sub && sub.createdAt >= startOfDay;
       return {
         ...t.toObject(),
         mySubmissionStatus: sub?.status || null,
+        submittedToday: t.isDaily ? submittedToday : undefined,
         mySubmission: sub
           ? { status: sub.status, rejectionReason: sub.rejectionReason, submittedAt: sub.createdAt }
           : null,
       };
     });
-    res.json({ success: true, data: { tasks: data, total, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+
+    // Daily goal progress (approved daily tasks today / active daily tasks)
+    const dailyTasks = await Task.find({ isDaily: true, status: 'active' }).select('_id');
+    let dailyGoal: Record<string, unknown> | null = null;
+    if (dailyTasks.length > 0) {
+      const [approvedDistinct, claimed, rewardSetting] = await Promise.all([
+        TaskSubmission.distinct('task', {
+          user: userId,
+          status: 'approved',
+          createdAt: { $gte: startOfDay },
+          task: { $in: dailyTasks.map((t) => t._id) },
+        }),
+        LedgerEntry.findOne({ user: userId, reason: 'daily_goal', createdAt: { $gte: startOfDay } }).select('_id'),
+        Setting.findOne({ key: 'dailyGoalReward' }).lean(),
+      ]);
+      dailyGoal = {
+        reward: Number(rewardSetting?.value ?? 0),
+        total: dailyTasks.length,
+        completed: approvedDistinct.length,
+        claimedToday: !!claimed,
+      };
+    }
+
+    res.json({
+      success: true,
+      data: {
+        tasks: data,
+        total,
+        page: Number(page),
+        pages: Math.ceil(Number(total) / Number(limit)),
+        dailyGoal,
+      },
+    });
   })
 );
 
@@ -134,8 +173,17 @@ router.get(
   asyncHandler(async (req, res) => {
     const task = await Task.findById(req.params.id);
     if (!task) throw new ApiError(404, 'Task not found');
-    const submission = await TaskSubmission.findOne({ task: task._id, user: req.user!._id });
-    res.json({ success: true, data: { task, submission } });
+    const submission = await TaskSubmission.findOne({ task: task._id, user: req.user!._id }).sort({ createdAt: -1 });
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    res.json({
+      success: true,
+      data: {
+        task,
+        submission,
+        submittedToday: task.isDaily ? !!submission && submission.createdAt >= startOfDay : undefined,
+      },
+    });
   })
 );
 
@@ -155,9 +203,15 @@ router.post(
 
     const task = await Task.findById(req.params.id);
     if (!task || task.status !== 'active') throw new ApiError(404, 'Task not available');
-    const existing = await TaskSubmission.findOne({ task: task._id, user: req.user!._id });
-    if (existing) throw new ApiError(409, 'Already submitted');
-    if (task.totalSlots && task.filledSlots >= task.totalSlots) throw new ApiError(400, 'No slots left');
+    const existing = await TaskSubmission.findOne({ task: task._id, user: req.user!._id }).sort({ createdAt: -1 });
+    if (existing) {
+      if (!task.isDaily) throw new ApiError(409, 'Already submitted');
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      if (existing.createdAt >= startOfDay) throw new ApiError(409, 'Already submitted today');
+    }
+    if (!task.isDaily && task.totalSlots && task.filledSlots >= task.totalSlots)
+      throw new ApiError(400, 'No slots left');
 
     if (task.proofType === 'screenshot') {
       if (!req.file) throw new ApiError(400, 'Screenshot file required');
@@ -180,9 +234,11 @@ router.post(
       await submission.save();
     }
 
-    task.filledSlots += 1;
-    if (task.totalSlots && task.filledSlots >= task.totalSlots) task.status = 'completed';
-    await task.save();
+    if (!task.isDaily) {
+      task.filledSlots += 1;
+      if (task.totalSlots && task.filledSlots >= task.totalSlots) task.status = 'completed';
+      await task.save();
+    }
     res.status(201).json({ success: true, data: submission });
   })
 );

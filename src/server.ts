@@ -15,6 +15,7 @@ import referralsRoutes from './modules/referrals/referrals.routes';
 import walletRoutes from './modules/wallet/wallet.routes';
 import financeRoutes from './modules/finance/finance.routes';
 import adminRoutes from './modules/admin/admin.routes';
+import cmsRoutes from './modules/cms/cms.routes';
 import inquiriesRoutes from './modules/inquiries/inquiries.routes';
 import notificationsRoutes from './modules/notifications/notifications.routes';
 
@@ -96,6 +97,7 @@ app.post('/api/internal/restart', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api', videosRoutes);
+app.use('/api', cmsRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/referrals', referralsRoutes);
 app.use('/api/wallet', walletRoutes);

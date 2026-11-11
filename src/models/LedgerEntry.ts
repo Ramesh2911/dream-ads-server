@@ -5,7 +5,7 @@ export type TxType = 'credit' | 'debit';
 export type TxReason =
   | 'watch_reward' | 'task_reward' | 'referral_reward' | 'referral_commission' | 'level_up_bonus'
   | 'withdrawal' | 'deposit' | 'voucher_purchase' | 'chat_access'
-  | 'admin_adjustment' | 'signup_bonus' | 'recharge';
+  | 'admin_adjustment' | 'signup_bonus' | 'recharge' | 'daily_goal';
 
 export interface ILedgerEntry extends Document {
   _id: mongoose.Types.ObjectId;
@@ -31,7 +31,7 @@ const ledgerSchema = new Schema<ILedgerEntry>(
     balanceAfter: { type: Number, required: true },
     reason: {
       type: String,
-      enum: ['watch_reward', 'task_reward', 'referral_reward', 'referral_commission', 'level_up_bonus', 'withdrawal', 'deposit', 'voucher_purchase', 'chat_access', 'admin_adjustment', 'signup_bonus', 'recharge'],
+      enum: ['watch_reward', 'task_reward', 'referral_reward', 'referral_commission', 'level_up_bonus', 'withdrawal', 'deposit', 'voucher_purchase', 'chat_access', 'admin_adjustment', 'signup_bonus', 'recharge', 'daily_goal'],
       required: true,
     },
     refModel: { type: String },
