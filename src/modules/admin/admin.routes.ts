@@ -258,7 +258,7 @@ router.get(
     const skip = (Number(page) - 1) * Number(limit);
     const [users, total, kycCounts] = await Promise.all([
       User.find(filter)
-        .select('name email mobile dob referralCode status kycStatus avatar aadharFront aadharBack createdAt')
+        .select('name email mobile dob referralCode status kycStatus kycDocType avatar aadharFront aadharBack createdAt')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit)),

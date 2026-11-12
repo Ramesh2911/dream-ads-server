@@ -198,6 +198,7 @@ router.get(
       data: {
         id: u._id, name: u.name, email: u.email, mobile: u.mobile, referralCode: u.referralCode,
         dob: u.dob, avatar: u.avatar, aadharFront: u.aadharFront, aadharBack: u.aadharBack,
+        kycDocType: u.kycDocType ?? null,
         status: u.status, kycStatus: u.kycStatus, isAgeVerified: u.isAgeVerified, balances,
         membershipStatus: u.membershipStatus ?? 'none', membershipActiveAt: u.membershipActiveAt ?? null,
       },
@@ -226,6 +227,18 @@ router.put(
       let docsChanged = false;
       const front = files.aadharFront?.[0];
       const back = files.aadharBack?.[0];
+      const rawDocType = typeof req.body.kycDocType === 'string' ? req.body.kycDocType : '';
+      const docType = rawDocType === 'pan' || rawDocType === 'voter' || rawDocType === 'aadhar' ? rawDocType : undefined;
+
+      // Doc type switch → clear old slots (smooth automatic replace)
+      if (docType && user.kycDocType && user.kycDocType !== docType && (front || back)) {
+        if (user.aadharFront) { removeProfileFile(user.aadharFront); user.aadharFront = undefined; }
+        if (user.aadharBack) { removeProfileFile(user.aadharBack); user.aadharBack = undefined; }
+        user.kycDocType = docType;
+      } else if (docType) {
+        user.kycDocType = docType;
+      }
+
       if (front) {
         removeProfileFile(user.aadharFront);
         user.aadharFront = front.filename;
@@ -241,7 +254,7 @@ router.put(
       await user.save();
       res.json({
         success: true,
-        data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycStatus: user.kycStatus },
+        data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
       });
       return;
     }
@@ -252,7 +265,7 @@ router.put(
     await user.save();
     res.json({
       success: true,
-      data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycStatus: user.kycStatus },
+      data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
     });
   })
 );
