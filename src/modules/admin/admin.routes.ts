@@ -350,12 +350,96 @@ router.get(
   asyncHandler(async (req, res) => {
     const user = await User.findById(req.params.id).select('-password');
     if (!user) throw new ApiError(404, 'User not found');
-    const [balances, referralCount, recentLedger] = await Promise.all([
-      getBalances(String(user._id)),
-      User.countDocuments({ referredBy: user._id }),
-      LedgerEntry.find({ user: user._id }).sort({ createdAt: -1 }).limit(20),
+    const uid = user._id;
+    const [
+      balances, referralCount, recentLedger,
+      memReqAgg, recentMembership,
+      taskAgg, recentTasks,
+      wdAgg, recentWithdrawals,
+      dpAgg, recentDeposits,
+    ] = await Promise.all([
+      getBalances(String(uid)),
+      User.countDocuments({ referredBy: uid }),
+      LedgerEntry.find({ user: uid }).sort({ createdAt: -1 }).limit(20),
+      MembershipRequest.aggregate([
+        { $match: { user: uid } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      MembershipRequest.find({ user: uid }).sort({ createdAt: -1 }).limit(5).select('method amount status createdAt').lean(),
+      TaskSubmission.aggregate([
+        { $match: { user: uid } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      TaskSubmission.find({ user: uid }).sort({ createdAt: -1 }).limit(10)
+        .populate('task', 'title rewardCoins').select('status task createdAt rejectionReason').lean(),
+      Withdrawal.aggregate([
+        { $match: { user: uid } },
+        { $group: { _id: '$status', count: { $sum: 1 }, sum: { $sum: '$amount' } } },
+      ]),
+      Withdrawal.find({ user: uid }).sort({ createdAt: -1 }).limit(10)
+        .select('amount wallet method status createdAt').lean(),
+      Deposit.aggregate([
+        { $match: { user: uid } },
+        { $group: { _id: '$status', count: { $sum: 1 }, sum: { $sum: '$amount' } } },
+      ]),
+      Deposit.find({ user: uid }).sort({ createdAt: -1 }).limit(5)
+        .select('amount gateway status createdAt').lean(),
     ]);
-    res.json({ success: true, data: { user, balances, referralCount, recentLedger } });
+
+    const countBy = (rows: Array<{ _id: string; count: number }>, keys: string[]) => {
+      const m = Object.fromEntries(keys.map((k) => [k, 0]));
+      for (const r of rows) if (r._id in m) m[r._id] = r.count;
+      return m;
+    };
+    const sumBy = (rows: Array<{ _id: string; sum: number }>, key: string) =>
+      rows.find((r) => r._id === key)?.sum ?? 0;
+
+    const memCounts = countBy(memReqAgg as Array<{ _id: string; count: number }>, ['pending', 'approved', 'rejected']);
+    const taskCounts = countBy(taskAgg as Array<{ _id: string; count: number }>, ['pending', 'approved', 'rejected']);
+    const wdCounts = countBy(wdAgg as Array<{ _id: string; count: number }>, ['pending', 'approved', 'rejected', 'paid']);
+    const dpCounts = countBy(dpAgg as Array<{ _id: string; count: number }>, ['pending', 'completed', 'failed']);
+
+    res.json({
+      success: true,
+      data: {
+        user,
+        balances,
+        referralCount,
+        recentLedger,
+        summary: {
+          membership: {
+            status: user.membershipStatus ?? 'none',
+            activeAt: user.membershipActiveAt ?? null,
+            requests: memCounts,
+          },
+          tasks: {
+            total: taskCounts.pending + taskCounts.approved + taskCounts.rejected,
+            ...taskCounts,
+          },
+          withdrawals: {
+            total: wdCounts.pending + wdCounts.approved + wdCounts.rejected + wdCounts.paid,
+            ...wdCounts,
+            sums: {
+              pending: sumBy(wdAgg as Array<{ _id: string; sum: number }>, 'pending'),
+              paid: sumBy(wdAgg as Array<{ _id: string; sum: number }>, 'paid'),
+            },
+          },
+          deposits: {
+            total: dpCounts.pending + dpCounts.completed + dpCounts.failed,
+            ...dpCounts,
+            sums: {
+              completed: sumBy(dpAgg as Array<{ _id: string; sum: number }>, 'completed'),
+            },
+          },
+        },
+        recent: {
+          membership: recentMembership,
+          tasks: recentTasks,
+          withdrawals: recentWithdrawals,
+          deposits: recentDeposits,
+        },
+      },
+    });
   })
 );
 
