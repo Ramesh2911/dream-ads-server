@@ -1,0 +1,132 @@
+name: Diagnose 503 exact
+
+on:
+  push:
+    branches: [master]
+
+concurrency:
+  group: diagnose-503
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture exact server error + fresh logs
+        env:
+          CPANEL_API_TOKEN: ${{ secrets.CPANEL_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          AUTH="Authorization: cpanel dreamads:${CPANEL_API_TOKEN}"
+          BASE="https://server.shodns.in:2083"
+
+          getfile() {
+            local dir="$1" file="$2"
+            local edir efile
+            edir=$(printf '%s' "$dir" | jq -sRr @uri)
+            efile=$(printf '%s' "$file" | jq -sRr @uri)
+            curl -sS --max-time 25 -H "$AUTH" "$BASE/execute/Fileman/get_file_content?dir=${edir}&file=${efile}"
+          }
+
+          listfiles() {
+            local dir="$1"
+            local edir
+            edir=$(printf '%s' "$dir" | jq -sRr @uri)
+            curl -sS --max-time 25 -H "$AUTH" "$BASE/execute/Fileman/list_files?dir=${edir}"
+          }
+
+          echo "===== 1. .env re-read ====="
+          getfile /home/dreamads/backend .env | jq -r '.data.content // ((.errors // []) | tostring)' || true
+          echo
+
+          echo "===== 2. dist/ listing ====="
+          listfiles /home/dreamads/backend/dist | jq -c '{status, files: [(.data[]? | {file, size, mtime})]}' || true
+          echo
+
+          echo "===== 3. package.json main/start ====="
+          getfile /home/dreamads/backend package.json | jq -r '.data.content // empty' > /tmp/pj.json
+          jq -c '{main, start: .scripts.start, name}' /tmp/pj.json 2>/dev/null || cat /tmp/pj.json | head -c 300
+          echo
+
+          echo "===== 4. node_modules health ====="
+          for m in express mongoose bcryptjs dotenv pino cors helmet; do
+            r=$(getfile "/home/dreamads/backend/node_modules/$m" package.json)
+            st=$(echo "$r" | jq -r '.status // 0')
+            nm=$(echo "$r" | jq -r '.data.content // empty' | jq -r '.name // empty' 2>/dev/null || true)
+            echo "module $m: status=$st name=$nm"
+          done
+          echo "--- node_modules dir top ---"
+          listfiles /home/dreamads/backend/node_modules | jq -c '{status, n: (.data | length)}' || true
+          echo
+
+          echo "===== 5. FRESH LOG HUNT (backend) ====="
+          for f in stderr.log error_log error.log out.log nohup.out access.log app.log npm-debug.log; do
+            r=$(getfile /home/dreamads/backend "$f")
+            st=$(echo "$r" | jq -r '.status // 0')
+            if [ "$st" = "1" ]; then
+              echo "--- backend/$f META+TAIL ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -50
+              echo
+            else
+              echo "--- backend/$f: missing ---"
+            fi
+          done
+          echo
+
+          echo "===== 6. LOG DIRS ====="
+          for d in logs log tmp .local; do
+            echo "--- /home/dreamads/backend/$d ---"
+            listfiles "/home/dreamads/backend/$d" | jq -c '{status, files: [(.data[]? | {file, size, mtime})]}' || true
+          done
+          for d in logs log .local; do
+            echo "--- /home/dreamads/$d ---"
+            listfiles "/home/dreamads/$d" | jq -c '{status, files: [(.data[]? | {file, size, mtime})]}' || true
+          done
+          echo
+
+          echo "===== 7. HOME-level logs ====="
+          for f in error_log error.log nohup.out access.log; do
+            r=$(getfile /home/dreamads "$f")
+            st=$(echo "$r" | jq -r '.status // 0')
+            if [ "$st" = "1" ]; then
+              echo "--- home/$f TAIL ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -50
+            fi
+          done
+          echo
+
+          echo "===== 8. tmp/ contents (restart.txt, smoke, etc) ====="
+          listfiles /home/dreamads/backend/tmp | jq -c '{status, files: [(.data[]? | {file, size, mtime})]}' || true
+          for f in restart.txt smoke.js; do
+            r=$(getfile /home/dreamads/backend/tmp "$f")
+            st=$(echo "$r" | jq -r '.status // 0')
+            if [ "$st" = "1" ]; then
+              echo "--- tmp/$f content ---"
+              echo "$r" | jq -r '.data.content // empty' | tail -20
+            fi
+          done
+          echo
+
+          echo "===== 9. cPanel app config hunt ====="
+          for f in .cpanel/lsnode.json lsnode.json app.json server.js; do
+            r=$(getfile /home/dreamads/backend "$f")
+            st=$(echo "$r" | jq -r '.status // 0')
+            echo "$f: status=$st"
+            if [ "$st" = "1" ]; then
+              echo "$r" | jq -r '.data.content // empty' | head -c 500
+              echo
+            fi
+          done
+          echo
+
+          echo "===== 10. HEALTH PROBE ====="
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/h.json -w '%{http_code}' --max-time 12 "https://dreamads.in/api/health" || echo 000)
+            body=$(head -c 150 /tmp/h.json 2>/dev/null || true)
+            echo "try $i: http=$code $body"
+          done
+          echo
+          echo "DIAGNOSE COMPLETE"
