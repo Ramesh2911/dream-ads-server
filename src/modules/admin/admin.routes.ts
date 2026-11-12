@@ -163,9 +163,11 @@ router.get(
   requireAdminAuth,
   requirePermission('dashboard.view'),
   asyncHandler(async (_req, res) => {
-    const [userCount, newUsersToday, pendingTasks, pendingWithdrawals, pendingDeposits, totalVideoEarned, pendingLeads, signupsRaw] = await Promise.all([
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const [userCount, newUsersToday, pendingTasks, pendingWithdrawals, pendingDeposits, totalVideoEarned, pendingLeads, signupsRaw, activeUsers, blockedUsers, walletHoldingsRaw, wdPaidRaw, wdPendingRaw, todayReferrals] = await Promise.all([
       User.countDocuments({ status: { $ne: 'deleted' } }),
-      User.countDocuments({ createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) } }),
+      User.countDocuments({ createdAt: { $gte: today } }),
       TaskSubmission.countDocuments({ status: 'pending' }),
       Withdrawal.countDocuments({ status: 'pending' }),
       Deposit.countDocuments({ status: 'pending' }),
@@ -176,6 +178,12 @@ router.get(
         { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
         { $sort: { _id: 1 } },
       ]),
+      User.countDocuments({ status: 'active' }),
+      User.countDocuments({ status: { $in: ['banned', 'suspended'] } }),
+      Wallet.aggregate([{ $group: { _id: null, total: { $sum: '$balance' } } }]),
+      Withdrawal.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      Withdrawal.aggregate([{ $match: { status: 'pending' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+      User.countDocuments({ referredBy: { $ne: null }, createdAt: { $gte: today } }),
     ]);
     const signupsByDay = new Map<string, number>(
       (signupsRaw as Array<{ _id: string; count: number }>).map((r) => [r._id, r.count])
@@ -184,6 +192,7 @@ router.get(
       const key = new Date(Date.now() - (6 - i) * 864e5).toISOString().slice(0, 10);
       return { date: key, count: signupsByDay.get(key) ?? 0 };
     });
+    const walletLiability = (walletHoldingsRaw as Array<{ total: number }>)[0]?.total ?? 0;
     res.json({
       success: true,
       data: {
@@ -191,6 +200,18 @@ router.get(
         totalVideoEarned: totalVideoEarned[0]?.total || 0,
         pendingLeads,
         signups7d,
+        cards: {
+          totalUsers: userCount,
+          activeUsers,
+          blockedUsers,
+          walletLiability,
+          todayReferrals,
+        },
+        walletAnalytics: {
+          holdings: walletLiability,
+          withdrawals: (wdPaidRaw as Array<{ total: number }>)[0]?.total ?? 0,
+          pending: (wdPendingRaw as Array<{ total: number }>)[0]?.total ?? 0,
+        },
       },
     });
   })
