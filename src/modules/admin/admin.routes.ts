@@ -2777,6 +2777,7 @@ router.delete(
 // ---- Announcements (scrolling ticker on app home) ----
 const announcementSchema = z.object({
   text: z.string().trim().min(2).max(300),
+  instruction: z.string().trim().max(1000).optional(),
   priority: z.coerce.number().int().min(0).max(100).optional(),
   isActive: z.boolean().optional(),
 });
