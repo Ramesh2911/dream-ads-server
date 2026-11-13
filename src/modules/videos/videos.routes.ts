@@ -134,6 +134,23 @@ router.get(
   })
 );
 
+const bannerMediaRoot = path.resolve(env.uploadDir, 'banners');
+
+// Public banner image serving — bare filename (or legacy absolute URL) from the banners list
+router.get(
+  '/banners/media/:file',
+  asyncHandler(async (req, res) => {
+    const file = req.params.file;
+    if (!file || file.includes('..') || !/^[\w.-]{1,120}$/.test(file)) throw new ApiError(404, 'Not found');
+    const full = path.resolve(bannerMediaRoot, file);
+    if (!full.startsWith(bannerMediaRoot + path.sep) || !fs.existsSync(full)) throw new ApiError(404, 'Not found');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(full, (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
+  })
+);
+
 router.post(
   '/videos/:id/view',
   requireUserAuth,

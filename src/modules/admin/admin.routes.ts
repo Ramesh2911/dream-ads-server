@@ -676,6 +676,113 @@ function unlinkMediaFile(name: string) {
   }
 }
 
+// ---- Banner image upload (exact 1280×720 enforced) ----
+const bannerMediaRoot = path.resolve(env.uploadDir, 'banners');
+fs.mkdirSync(bannerMediaRoot, { recursive: true });
+
+const bannerStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, bannerMediaRoot),
+  filename: (_req, file, cb) => {
+    const safe = file.originalname.replace(/[^\w.-]+/g, '_').slice(-80);
+    cb(null, `banner_${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+  },
+});
+
+const bannerUpload = multer({
+  storage: bannerStorage,
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED_IMAGE_MIME.includes(file.mimetype))
+      return cb(new ApiError(400, 'Banner image must be PNG, JPG or WEBP'));
+    cb(null, true);
+  },
+});
+
+function handleBannerUpload(req: Request, res: Response, next: NextFunction) {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) return next();
+  bannerUpload.single('image')(req, res, (err: unknown) => {
+    if (err) {
+      if (err instanceof ApiError) return next(err);
+      const e = err as { code?: string; message?: string };
+      if (e.code === 'LIMIT_FILE_SIZE') return next(new ApiError(400, 'Banner image must be 5MB or smaller'));
+      if (e.code === 'LIMIT_UNEXPECTED_FILE') return next(new ApiError(400, 'Unexpected file field'));
+      return next(new ApiError(400, e.message || 'Upload failed'));
+    }
+    next();
+  });
+}
+
+function unlinkBannerFile(name: string) {
+  if (!name || name.startsWith('http') || name.includes('..') || !/^[\w.-]{1,120}$/.test(name)) return;
+  try {
+    fs.unlinkSync(path.resolve(bannerMediaRoot, name));
+  } catch {
+    /* file may already be gone */
+  }
+}
+
+/** Read PNG/JPEG/WEBP pixel dimensions from a file on disk (no image libs). */
+function readImageDims(file: string): { width: number; height: number } | null {
+  try {
+    const buf = fs.readFileSync(file);
+    // PNG: signature + IHDR width/height at byte 16/20 (big-endian)
+    if (buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47)
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    // WEBP: RIFF....WEBP + VP8 / VP8L / VP8X chunk
+    if (buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const four = buf.toString('ascii', 12, 16);
+      if (four === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+      if (four === 'VP8L') {
+        const bits = buf.readUInt32LE(21);
+        return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+      }
+      if (four === 'VP8X') return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
+      return null;
+    }
+    // JPEG: scan segments for SOF0–SOF15 (excluding DHT/C2/ICC)
+    if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < buf.length) {
+        if (buf[i] !== 0xff) { i++; continue; }
+        const marker = buf[i + 1];
+        if (marker === 0xff) { i++; continue; }
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
+        if (marker === 0xd9 || marker === 0xda) break;
+        const segLen = buf.readUInt16BE(i + 2);
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+          return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+        i += 2 + segLen;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const BANNER_W = 1280;
+const BANNER_H = 720;
+
+/** Validate the uploaded banner file is exactly 1280×720; returns filename or throws (unlinking on failure). */
+function requireBannerImage(req: Request): string {
+  const file = req.file;
+  if (!file) throw new ApiError(400, 'Banner image is required');
+  const dims = readImageDims(file.path);
+  if (!dims || dims.width !== BANNER_W || dims.height !== BANNER_H) {
+    try { fs.unlinkSync(file.path); } catch { /* noop */ }
+    throw new ApiError(400, `Banner must be exactly ${BANNER_W}×${BANNER_H}px${dims ? ` (got ${dims.width}×${dims.height})` : ''}`);
+  }
+  return file.filename;
+}
+
+/** Drop empty-string fields from FormData so zod optional/coerce fields don't choke. */
+function cleanFormBody(body: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) if (v !== '' && v !== undefined && v !== null) out[k] = v;
+  return out;
+}
+
 const boolish = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean());
 
 router.get(
@@ -1016,21 +1123,28 @@ router.post(
   '/banners',
   requireAdminAuth,
   requirePermission('content.manage'),
+  handleBannerUpload,
   audit('banner.create', 'Banner'),
   asyncHandler(async (req, res) => {
-    const body = z
-      .object({
-        title: z.string().min(2).max(200),
-        imageUrl: z.string().url(),
-        targetUrl: z.string().url().optional(),
-        order: z.number().int().min(0).max(9999).optional(),
-        isActive: z.boolean().optional(),
-        startsAt: z.coerce.date().optional(),
-        endsAt: z.coerce.date().optional(),
-      })
-      .parse(req.body);
-    const banner = await Banner.create(body);
-    res.status(201).json({ success: true, data: banner });
+    let imageUrl: string | null = null;
+    try {
+      imageUrl = requireBannerImage(req);
+      const body = z
+        .object({
+          title: z.string().min(2).max(200),
+          targetUrl: z.string().url().optional(),
+          order: z.coerce.number().int().min(0).max(9999).optional(),
+          isActive: boolish.optional(),
+          startsAt: z.coerce.date().optional(),
+          endsAt: z.coerce.date().optional(),
+        })
+        .parse(cleanFormBody(req.body));
+      const banner = await Banner.create({ ...body, imageUrl });
+      res.status(201).json({ success: true, data: banner });
+    } catch (err) {
+      if (imageUrl) unlinkBannerFile(imageUrl);
+      throw err;
+    }
   })
 );
 
@@ -1038,22 +1152,34 @@ router.put(
   '/banners/:id',
   requireAdminAuth,
   requirePermission('content.manage'),
+  handleBannerUpload,
   audit('banner.update', 'Banner'),
   asyncHandler(async (req, res) => {
-    const body = z
-      .object({
-        title: z.string().min(2).max(200).optional(),
-        imageUrl: z.string().url().optional(),
-        targetUrl: z.string().url().optional(),
-        order: z.number().int().min(0).max(9999).optional(),
-        isActive: z.boolean().optional(),
-        startsAt: z.coerce.date().optional(),
-        endsAt: z.coerce.date().optional(),
-      })
-      .parse(req.body);
-    const banner = await Banner.findByIdAndUpdate(req.params.id, body, { new: true });
-    if (!banner) throw new ApiError(404, 'Banner not found');
-    res.json({ success: true, data: banner });
+    let newImage: string | null = null;
+    try {
+      if (req.file) newImage = requireBannerImage(req);
+      const body = z
+        .object({
+          title: z.string().min(2).max(200).optional(),
+          targetUrl: z.string().url().optional(),
+          order: z.coerce.number().int().min(0).max(9999).optional(),
+          isActive: boolish.optional(),
+          startsAt: z.coerce.date().optional(),
+          endsAt: z.coerce.date().optional(),
+        })
+        .parse(cleanFormBody(req.body));
+      const banner = await Banner.findById(req.params.id);
+      if (!banner) throw new ApiError(404, 'Banner not found');
+      const oldImage = banner.imageUrl;
+      Object.assign(banner, body);
+      if (newImage) banner.imageUrl = newImage;
+      await banner.save();
+      if (newImage && oldImage && oldImage !== newImage) unlinkBannerFile(oldImage);
+      res.json({ success: true, data: banner });
+    } catch (err) {
+      if (newImage) unlinkBannerFile(newImage);
+      throw err;
+    }
   })
 );
 
@@ -1065,6 +1191,7 @@ router.delete(
   asyncHandler(async (req, res) => {
     const banner = await Banner.findByIdAndDelete(req.params.id);
     if (!banner) throw new ApiError(404, 'Banner not found');
+    unlinkBannerFile(banner.imageUrl);
     res.json({ success: true, data: { _id: banner._id } });
   })
 );
