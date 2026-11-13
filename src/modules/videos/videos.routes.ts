@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
 import { z } from 'zod';
+import { env } from '../../config/env';
 import { Video } from '../../models/Video';
 import { Category } from '../../models/Category';
 import { Banner } from '../../models/Banner';
@@ -63,6 +66,23 @@ router.get(
     }));
 
     res.json({ success: true, data: { videos: data, total, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  })
+);
+
+const videoMediaRoot = path.resolve(env.uploadDir, 'videos');
+
+// Public media file serving — sendFile supports HTTP Range (video seeking)
+router.get(
+  '/videos/media/:file',
+  asyncHandler(async (req, res) => {
+    const file = req.params.file;
+    if (!file || file.includes('..') || !/^[\w.-]{1,120}$/.test(file)) throw new ApiError(404, 'Not found');
+    const full = path.resolve(videoMediaRoot, file);
+    if (!full.startsWith(videoMediaRoot + path.sep) || !fs.existsSync(full)) throw new ApiError(404, 'Not found');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(full, (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
   })
 );
 

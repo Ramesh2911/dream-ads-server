@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
@@ -617,6 +617,67 @@ router.get(
 );
 
 // ---- Videos ----
+const videoMediaRoot = path.resolve(env.uploadDir, 'videos');
+fs.mkdirSync(videoMediaRoot, { recursive: true });
+
+const videoStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, videoMediaRoot),
+  filename: (_req, file, cb) => {
+    const safe = file.originalname.replace(/[^\w.-]+/g, '_').slice(-80);
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+  },
+});
+
+const ALLOWED_VIDEO_MIME = ['video/mp4', 'video/webm', 'video/quicktime'];
+const ALLOWED_IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp'];
+
+const videoFilesUpload = multer({
+  storage: videoStorage,
+  limits: { fileSize: 100 * 1024 * 1024, files: 2 },
+  fileFilter: (_req, file, cb) => {
+    if (file.fieldname === 'video') {
+      if (!ALLOWED_VIDEO_MIME.includes(file.mimetype))
+        return cb(new ApiError(400, 'Video must be MP4, WebM or MOV'));
+      return cb(null, true);
+    }
+    if (file.fieldname === 'thumbnail') {
+      if (!ALLOWED_IMAGE_MIME.includes(file.mimetype))
+        return cb(new ApiError(400, 'Thumbnail must be PNG, JPG or WEBP'));
+      return cb(null, true);
+    }
+    cb(new ApiError(400, 'Unexpected file field'));
+  },
+});
+
+function handleVideoUpload(req: Request, res: Response, next: NextFunction) {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) return next();
+  videoFilesUpload.fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'thumbnail', maxCount: 1 },
+  ])(req, res, (err: unknown) => {
+    if (err) {
+      if (err instanceof ApiError) return next(err);
+      const e = err as { code?: string; message?: string };
+      if (e.code === 'LIMIT_FILE_SIZE') return next(new ApiError(400, 'Video must be 100MB or smaller'));
+      if (e.code === 'LIMIT_FILE_COUNT') return next(new ApiError(400, 'Too many files'));
+      return next(new ApiError(400, e.message || 'Upload failed'));
+    }
+    next();
+  });
+}
+
+function unlinkMediaFile(name: string) {
+  if (!name || name.startsWith('http') || name.includes('..') || !/^[\w.-]{1,120}$/.test(name)) return;
+  try {
+    fs.unlinkSync(path.resolve(videoMediaRoot, name));
+  } catch {
+    /* file may already be gone */
+  }
+}
+
+const boolish = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean());
+
 router.get(
   '/videos',
   requireAdminAuth,
@@ -649,25 +710,53 @@ router.post(
   '/videos',
   requireAdminAuth,
   requirePermission('content.manage'),
+  handleVideoUpload,
   audit('video.create', 'Video'),
   asyncHandler(async (req, res) => {
+    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const videoFile = files?.video?.[0];
+    const thumbFile = files?.thumbnail?.[0];
+    if (!videoFile) throw new ApiError(400, 'Video file is required');
+    if (!thumbFile) throw new ApiError(400, 'Thumbnail image is required');
+    if (thumbFile.size > 5 * 1024 * 1024) {
+      unlinkMediaFile(thumbFile.filename);
+      unlinkMediaFile(videoFile.filename);
+      throw new ApiError(400, 'Thumbnail must be 5MB or smaller');
+    }
+
     const data = z
       .object({
         title: z.string().min(1),
         description: z.string().optional(),
-        url: z.string().url(),
-        thumbnail: z.string().url(),
-        category: z.string(),
-        duration: z.number().optional(),
-        rewardCoins: z.number().min(0).default(0),
+        category: z.string().min(1),
+        duration: z.coerce.number().min(0).optional(),
+        rewardCoins: z.coerce.number().min(0).default(0),
         rewardWallet: z.enum(['video', 'social']).default('video'),
         status: z.enum(['draft', 'published', 'archived']).default('draft'),
-        isFeatured: z.boolean().default(false),
-        isTrending: z.boolean().default(false),
+        isFeatured: boolish.default(false),
+        isTrending: boolish.default(false),
       })
-      .parse(req.body);
-    const video = await Video.create({ ...data, createdBy: req.admin!._id });
-    res.status(201).json({ success: true, data: video });
+      .safeParse(req.body);
+
+    if (!data.success) {
+      unlinkMediaFile(videoFile.filename);
+      unlinkMediaFile(thumbFile.filename);
+      throw new ApiError(400, data.error.issues[0]?.message || 'Invalid video data');
+    }
+
+    try {
+      const video = await Video.create({
+        ...data.data,
+        url: videoFile.filename,
+        thumbnail: thumbFile.filename,
+        createdBy: req.admin!._id,
+      });
+      res.status(201).json({ success: true, data: video });
+    } catch (e) {
+      unlinkMediaFile(videoFile.filename);
+      unlinkMediaFile(thumbFile.filename);
+      throw e;
+    }
   })
 );
 
@@ -675,10 +764,58 @@ router.put(
   '/videos/:id',
   requireAdminAuth,
   requirePermission('content.manage'),
+  handleVideoUpload,
   audit('video.update', 'Video'),
   asyncHandler(async (req, res) => {
-    const video = await Video.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!video) throw new ApiError(404, 'Video not found');
+    const video = await Video.findById(req.params.id);
+    if (!video) {
+      const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+      for (const f of [files?.video?.[0], files?.thumbnail?.[0]]) if (f) unlinkMediaFile(f.filename);
+      throw new ApiError(404, 'Video not found');
+    }
+
+    const data = z
+      .object({
+        title: z.string().min(1).optional(),
+        description: z.string().optional(),
+        category: z.string().min(1).optional(),
+        duration: z.coerce.number().min(0).optional(),
+        rewardCoins: z.coerce.number().min(0).optional(),
+        rewardWallet: z.enum(['video', 'social']).optional(),
+        status: z.enum(['draft', 'published', 'archived']).optional(),
+        isFeatured: boolish.optional(),
+        isTrending: boolish.optional(),
+      })
+      .safeParse(req.body);
+
+    if (!data.success) {
+      const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+      for (const f of [files?.video?.[0], files?.thumbnail?.[0]]) if (f) unlinkMediaFile(f.filename);
+      throw new ApiError(400, data.error.issues[0]?.message || 'Invalid video data');
+    }
+
+    const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+    const videoFile = files?.video?.[0];
+    const thumbFile = files?.thumbnail?.[0];
+    const updates: Record<string, unknown> = { ...data.data };
+
+    if (thumbFile && thumbFile.size > 5 * 1024 * 1024) {
+      unlinkMediaFile(thumbFile.filename);
+      if (videoFile) unlinkMediaFile(videoFile.filename);
+      throw new ApiError(400, 'Thumbnail must be 5MB or smaller');
+    }
+
+    if (videoFile) {
+      updates.url = videoFile.filename;
+      unlinkMediaFile(video.url);
+    }
+    if (thumbFile) {
+      updates.thumbnail = thumbFile.filename;
+      unlinkMediaFile(video.thumbnail);
+    }
+
+    Object.assign(video, updates);
+    await video.save();
     res.json({ success: true, data: video });
   })
 );
@@ -691,6 +828,8 @@ router.delete(
   asyncHandler(async (req, res) => {
     const video = await Video.findByIdAndDelete(req.params.id);
     if (!video) throw new ApiError(404, 'Video not found');
+    unlinkMediaFile(video.url);
+    unlinkMediaFile(video.thumbnail);
     res.json({ success: true, message: 'Video deleted' });
   })
 );
