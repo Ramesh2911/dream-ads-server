@@ -2158,6 +2158,26 @@ router.get(
 );
 
 // ---- Roles ----
+const roleContactSchema = z.object({
+  phone: z.union([z.literal(''), z.string().regex(/^\d{10}$/, 'Phone must be exactly 10 digits')]).optional(),
+  email: z.union([z.literal(''), z.string().email('Invalid email')]).optional(),
+  password: z.string().min(6, 'Password must be at least 6 characters').optional(),
+});
+const roleCreateSchema = roleContactSchema.extend({
+  name: z.string().min(2).max(80),
+  permissions: z.array(z.string()),
+});
+const roleUpdateSchema = roleContactSchema.partial().extend({
+  name: z.string().min(2).max(80).optional(),
+  permissions: z.array(z.string()).optional(),
+});
+
+/** Strip the password hash from any role payload before it leaves the API. */
+function safeRole(role: { toObject(): Record<string, unknown> }) {
+  const { password: _password, ...rest } = role.toObject();
+  return rest;
+}
+
 router.get(
   '/roles',
   requireAdminAuth,
@@ -2173,7 +2193,7 @@ router.get(
     res.json({
       success: true,
       data: {
-        roles: roles.map((r) => ({ ...r.toObject(), adminCount: adminCounts.get(String(r._id)) ?? 0 })),
+        roles: roles.map((r) => ({ ...safeRole(r), adminCount: adminCounts.get(String(r._id)) ?? 0 })),
         allPermissions: ALL_PERMISSIONS,
         stats: { total: roles.length, system, custom: roles.length - system, totalAdmins, permissionCount: ALL_PERMISSIONS.length },
       },
@@ -2187,9 +2207,9 @@ router.post(
   requirePermission('roles.manage'),
   audit('role.create', 'Role'),
   asyncHandler(async (req, res) => {
-    const data = z.object({ name: z.string().min(2), permissions: z.array(z.string()) }).parse(req.body);
-    const role = await Role.create(data);
-    res.status(201).json({ success: true, data: role });
+    const { password, ...data } = roleCreateSchema.parse(req.body);
+    const role = await Role.create(password ? { ...data, password: await bcrypt.hash(password, 10) } : data);
+    res.status(201).json({ success: true, data: safeRole(role) });
   })
 );
 
@@ -2199,9 +2219,13 @@ router.put(
   requirePermission('roles.manage'),
   audit('role.update', 'Role'),
   asyncHandler(async (req, res) => {
-    const role = await Role.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const { password, ...rest } = roleUpdateSchema.parse(req.body);
+    // Blank password on edit = keep the existing hash
+    const update: Record<string, unknown> = { ...rest };
+    if (password) update.password = await bcrypt.hash(password, 10);
+    const role = await Role.findByIdAndUpdate(req.params.id, update, { new: true });
     if (!role) throw new ApiError(404, 'Role not found');
-    res.json({ success: true, data: role });
+    res.json({ success: true, data: safeRole(role) });
   })
 );
 

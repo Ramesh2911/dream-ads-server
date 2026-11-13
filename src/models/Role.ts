@@ -25,6 +25,9 @@ export interface IRole extends Document {
   _id: mongoose.Types.ObjectId;
   name: string;
   permissions: Permission[];
+  phone: string;
+  email: string;
+  password: string;
   isSystem: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -34,6 +37,9 @@ const roleSchema = new Schema<IRole>(
   {
     name: { type: String, required: true, unique: true },
     permissions: [{ type: String, enum: ALL_PERMISSIONS }],
+    phone: { type: String, default: '', trim: true },
+    email: { type: String, default: '', trim: true },
+    password: { type: String, default: '' },
     isSystem: { type: Boolean, default: false },
   },
   { timestamps: true }
