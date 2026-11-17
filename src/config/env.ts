@@ -12,4 +12,9 @@ export const env = {
   corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:5173').split(','),
   uploadDir: process.env.UPLOAD_DIR || 'uploads',
   isProd: process.env.NODE_ENV === 'production',
+  brevoSmtpHost: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
+  brevoSmtpPort: parseInt(process.env.BREVO_SMTP_PORT || '587', 10),
+  brevoSmtpUser: process.env.BREVO_SMTP_USER || '',
+  brevoSmtpPass: process.env.BREVO_SMTP_PASS || '',
+  brevoFrom: process.env.BREVO_FROM || 'Dream Ads Admin <dreamadsmultisolutions@gmail.com>',
 };

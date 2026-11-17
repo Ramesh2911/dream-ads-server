@@ -1,12 +1,16 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
+import { randomInt, createHash, timingSafeEqual } from 'crypto';
+import { rateLimit } from 'express-rate-limit';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
 import { env } from '../../config/env';
+import { logger } from '../../utils/logger';
 import { User } from '../../models/User';
 import { AdminUser } from '../../models/AdminUser';
+import { AdminOtp } from '../../models/AdminOtp';
 import { Role, Permission, ALL_PERMISSIONS } from '../../models/Role';
 import { LedgerEntry } from '../../models/LedgerEntry';
 import { Wallet } from '../../models/Wallet';
@@ -31,6 +35,7 @@ import { AppUpdate } from '../../models/AppUpdate';
 import { Announcement } from '../../models/Announcement';
 import { applyLedger, getBalances } from '../../services/ledger.service';
 import { notify, broadcast } from '../../services/notify.service';
+import { sendMail } from '../../services/mailer.service';
 import { asyncHandler, ApiError } from '../../middleware/error';
 import { requireAdminAuth, requirePermission, signAccessToken } from '../../middleware/auth';
 import { audit } from '../../middleware/audit';
@@ -57,6 +62,116 @@ router.post(
         token: signAccessToken(String(admin._id)),
       },
     });
+  })
+);
+
+// ---- Forgot password (public — email OTP → reset) ----
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts — try again after 15 minutes' },
+});
+
+const OTP_TTL_MIN = 10;
+const OTP_MAX_ATTEMPTS = 5;
+
+function hashOtp(code: string): string {
+  return createHash('sha256').update(code).digest('hex');
+}
+
+function otpMatches(storedHash: string, code: string): boolean {
+  const a = Buffer.from(storedHash, 'hex');
+  const b = Buffer.from(hashOtp(code), 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function otpEmailHtml(code: string): string {
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
+  <h2 style="color:#0A1540;margin:0 0 4px;font-size:20px">Dream Ads Admin</h2>
+  <p style="color:#374151;font-size:14px;margin:8px 0">Use this code to reset your password:</p>
+  <p style="font-size:30px;letter-spacing:10px;font-weight:bold;color:#2563EB;text-align:center;background:#f1f5f9;padding:14px;border-radius:8px;margin:12px 0">${code}</p>
+  <p style="color:#6b7280;font-size:12px;margin-top:14px">Valid for ${OTP_TTL_MIN} minutes. If you didn't request this, you can safely ignore this email.</p>
+</div>`;
+}
+
+router.post(
+  '/forgot-password',
+  otpLimiter,
+  asyncHandler(async (req, res) => {
+    const { email } = z.object({ email: z.string().email() }).parse(req.body);
+    const admin = await AdminUser.findOne({ email, status: 'active' });
+    if (admin) {
+      const code = String(randomInt(100000, 1000000));
+      await AdminOtp.deleteMany({ email: admin.email });
+      await AdminOtp.create({
+        email: admin.email,
+        codeHash: hashOtp(code),
+        expiresAt: new Date(Date.now() + OTP_TTL_MIN * 60 * 1000),
+      });
+      try {
+        await sendMail({ to: admin.email, subject: 'Your password reset code — Dream Ads Admin', html: otpEmailHtml(code) });
+      } catch (err) {
+        logger.error({ err }, 'forgot-password: OTP email failed to send');
+        throw new ApiError(502, 'Could not send OTP email — try again later');
+      }
+    }
+    // Generic response whether or not the email exists (anti-enumeration)
+    res.json({ success: true, message: `If this email is registered, a ${OTP_TTL_MIN}-minute OTP has been sent` });
+  })
+);
+
+router.post(
+  '/forgot-password/reset',
+  otpLimiter,
+  asyncHandler(async (req, res) => {
+    const data = z
+      .object({
+        email: z.string().email(),
+        otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+        newPassword: z
+          .string()
+          .min(8, 'New password must be at least 8 characters')
+          .max(100)
+          .regex(/[a-zA-Z]/, 'Must contain a letter')
+          .regex(/\d/, 'Must contain a number'),
+      })
+      .parse(req.body);
+    const email = data.email.toLowerCase();
+
+    const record = await AdminOtp.findOne({ email }).sort({ createdAt: -1 });
+    if (!record || record.expiresAt.getTime() < Date.now()) {
+      await AdminOtp.deleteMany({ email });
+      throw new ApiError(400, 'OTP expired — request a new one');
+    }
+    if (record.attempts >= OTP_MAX_ATTEMPTS) {
+      await AdminOtp.deleteMany({ email });
+      throw new ApiError(400, 'Too many attempts — request a new OTP');
+    }
+    if (!otpMatches(record.codeHash, data.otp)) {
+      record.attempts += 1;
+      await record.save();
+      throw new ApiError(400, 'Invalid OTP');
+    }
+
+    const admin = await AdminUser.findOne({ email, status: 'active' });
+    if (!admin) throw new ApiError(400, 'Invalid request');
+
+    admin.password = await bcrypt.hash(data.newPassword, 10);
+    await admin.save();
+    await AdminOtp.deleteMany({ email });
+    AuditLog.create({
+      actor: admin._id,
+      actorEmail: admin.email,
+      action: 'password.reset',
+      entity: 'AdminUser',
+      entityId: String(admin._id),
+      after: { password: '[redacted]' },
+      ip: req.ip,
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'Password updated — sign in with your new password' });
   })
 );
 
