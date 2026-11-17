@@ -66,7 +66,10 @@ jobs:
           CORS_ORIGIN=http://localhost:5173,http://localhost:3100,http://localhost:8081,https://dreamads.in,https://www.dreamads.in,http://dreamads.in,https://admin.dreamads.in,http://admin.dreamads.in
           UPLOAD_DIR=uploads
           FIREBASE_PROJECT_ID=
-          GOOGLE_APPLICATION_CREDENTIALS="
+          GOOGLE_APPLICATION_CREDENTIALS=
+          BREVO_SMTP_USER=c2f03b001@smtp-brevo.com
+          BREVO_SMTP_PASS=${{ secrets.BREVO_SMTP_PASS }}
+          BREVO_FROM=Dream Ads Admin <dreamadsmultisolutions@gmail.com>"
           savefile /home/dreamads/backend .env "$ENV_CONTENT" | jq -c '{status,errors}' || true
           echo
 
