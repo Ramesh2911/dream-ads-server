@@ -122,6 +122,38 @@ router.post(
   })
 );
 
+// Step 2 — verify OTP only (does not consume the OTP; reset re-validates)
+router.post(
+  '/forgot-password/verify',
+  otpLimiter,
+  asyncHandler(async (req, res) => {
+    const data = z
+      .object({
+        email: z.string().email(),
+        otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+      })
+      .parse(req.body);
+    const email = data.email.toLowerCase();
+
+    const record = await AdminOtp.findOne({ email }).sort({ createdAt: -1 });
+    if (!record || record.expiresAt.getTime() < Date.now()) {
+      await AdminOtp.deleteMany({ email });
+      throw new ApiError(400, 'OTP expired — request a new one');
+    }
+    if (record.attempts >= OTP_MAX_ATTEMPTS) {
+      await AdminOtp.deleteMany({ email });
+      throw new ApiError(400, 'Too many attempts — request a new OTP');
+    }
+    if (!otpMatches(record.codeHash, data.otp)) {
+      record.attempts += 1;
+      await record.save();
+      throw new ApiError(400, 'Invalid OTP');
+    }
+
+    res.json({ success: true, message: 'OTP verified — set your new password' });
+  })
+);
+
 router.post(
   '/forgot-password/reset',
   otpLimiter,
