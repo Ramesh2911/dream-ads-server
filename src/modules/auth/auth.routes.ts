@@ -9,6 +9,7 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { User } from '../../models/User';
 import { UserOtp, OtpPurpose } from '../../models/UserOtp';
+import { DeletionRequest } from '../../models/DeletionRequest';
 import { Wallet } from '../../models/Wallet';
 import { env } from '../../config/env';
 import { logger } from '../../utils/logger';
@@ -244,6 +245,7 @@ router.post(
     const query = email ? { email } : { mobile };
     const user = await User.findOne(query);
     if (!user) throw new ApiError(401, 'Invalid credentials');
+    if (user.status === 'deleted') throw new ApiError(401, 'Invalid credentials');
     if (user.status === 'banned') throw new ApiError(403, 'Account banned');
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) throw new ApiError(401, 'Invalid credentials');
@@ -424,10 +426,19 @@ router.put(
   })
 );
 
+const deleteRequestSchema = z.object({
+  name: z.string().min(2, 'Name is required').max(80),
+  idNo: z.string().min(4, 'ID number is required').max(40),
+  phone: z.string().regex(/^\d{10}$/, 'Mobile must be 10 digits'),
+  email: z.string().email('Valid email is required'),
+  notes: z.string().max(500).optional(),
+});
+
 router.post(
   '/delete-request',
   requireUserAuth,
   asyncHandler(async (req: Request, res) => {
+    const data = deleteRequestSchema.parse(req.body);
     const user = await User.findById(req.user!._id);
     if (!user) throw new ApiError(404, 'User not found');
     if (user.status === 'pending_delete') {
@@ -435,6 +446,18 @@ router.post(
       return;
     }
     if (user.status !== 'active') throw new ApiError(400, 'Only active accounts can request deletion');
+    if (await DeletionRequest.exists({ user: user._id, status: 'pending' })) {
+      throw new ApiError(409, 'A deletion request is already under review');
+    }
+
+    await DeletionRequest.create({
+      user: user._id,
+      name: data.name,
+      idNo: data.idNo,
+      phone: data.phone,
+      email: data.email,
+      notes: data.notes?.trim() || undefined,
+    });
     user.status = 'pending_delete';
     await user.save();
     res.json({ success: true, message: 'Account deletion requested. An admin will review it.' });

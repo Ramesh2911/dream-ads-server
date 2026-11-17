@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { Types } from 'mongoose';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { randomInt, createHash, timingSafeEqual } from 'crypto';
@@ -33,6 +34,7 @@ import { Setting } from '../../models/Setting';
 import { Notification } from '../../models/Notification';
 import { AppUpdate } from '../../models/AppUpdate';
 import { Announcement } from '../../models/Announcement';
+import { DeletionRequest } from '../../models/DeletionRequest';
 import { applyLedger, getBalances } from '../../services/ledger.service';
 import { notify, broadcast } from '../../services/notify.service';
 import { sendMail } from '../../services/mailer.service';
@@ -612,6 +614,129 @@ router.put(
       data: { accountStatus: status },
     });
     res.json({ success: true, data: user });
+  })
+);
+
+// ---- Deletion requests (mobile account deletion review) ----
+router.get(
+  '/deletion-requests',
+  requireAdminAuth,
+  requirePermission('users.read'),
+  asyncHandler(async (req, res) => {
+    const { status, search, page = 1, limit = 20 } = req.query;
+    const and: Record<string, unknown>[] = [];
+    if (status) and.push({ status });
+    if (search) {
+      and.push({
+        $or: [
+          { name: { $regex: String(search), $options: 'i' } },
+          { email: { $regex: String(search), $options: 'i' } },
+          { phone: { $regex: String(search), $options: 'i' } },
+          { idNo: { $regex: String(search), $options: 'i' } },
+        ],
+      });
+    }
+    const filter = and.length ? { $and: and } : {};
+    const skip = (Number(page) - 1) * Number(limit);
+    const [requests, total, statusCounts] = await Promise.all([
+      DeletionRequest.find(filter)
+        .populate('user', 'name email mobile status avatar createdAt')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit)),
+      DeletionRequest.countDocuments(filter),
+      DeletionRequest.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+    ]);
+    const counts: Record<string, number> = { pending: 0, approved: 0, rejected: 0 };
+    for (const row of statusCounts as Array<{ _id: string; count: number }>) counts[row._id] = row.count;
+    res.json({ success: true, data: { requests, total, counts, page: Number(page), pages: Math.ceil(total / Number(limit)) } });
+  })
+);
+
+router.get(
+  '/deletion-requests/:id',
+  requireAdminAuth,
+  requirePermission('users.read'),
+  asyncHandler(async (req, res) => {
+    if (!Types.ObjectId.isValid(req.params.id)) throw new ApiError(404, 'Request not found');
+    const delReq = await DeletionRequest.findById(req.params.id).populate('user', 'name email mobile status avatar createdAt');
+    if (!delReq) throw new ApiError(404, 'Request not found');
+    res.json({ success: true, data: delReq });
+  })
+);
+
+router.put(
+  '/deletion-requests/:id',
+  requireAdminAuth,
+  requirePermission('users.update'),
+  audit('deletion.review', 'User'),
+  asyncHandler(async (req, res) => {
+    const { action, reason } = z
+      .object({ action: z.enum(['approve', 'reject']), reason: z.string().max(500).optional() })
+      .parse(req.body);
+    if (!Types.ObjectId.isValid(req.params.id)) throw new ApiError(404, 'Request not found');
+    const delReq = await DeletionRequest.findById(req.params.id);
+    if (!delReq) throw new ApiError(404, 'Request not found');
+    if (delReq.status !== 'pending') throw new ApiError(400, 'This request has already been reviewed');
+
+    const user = await User.findById(delReq.user);
+
+    if (action === 'approve') {
+      if (user && user.status !== 'deleted') {
+        for (const f of ['avatar', 'aadharFront', 'aadharBack', 'livePhoto'] as const) {
+          const filename = user[f];
+          if (filename && /^[\w.-]{1,120}$/.test(filename)) {
+            try {
+              fs.unlinkSync(path.join(profileRoot, filename));
+            } catch {
+              /* file may already be gone */
+            }
+          }
+        }
+        // Soft delete + PII anonymize: strips email/mobile (frees sparse-unique slots for re-registration)
+        await User.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              status: 'deleted',
+              name: 'Deleted User',
+              referralCode: `DEL${String(user._id)}`,
+              kycStatus: 'none',
+              kycDocuments: [],
+              isAgeVerified: false,
+            },
+            $unset: { email: '', mobile: '', dob: '', avatar: '', aadharFront: '', aadharBack: '', livePhoto: '', fcmToken: '', kycDocType: '' },
+          }
+        );
+      }
+      delReq.status = 'approved';
+      delReq.reviewedBy = req.admin!._id;
+      delReq.reviewedAt = new Date();
+      await delReq.save();
+      res.json({ success: true, message: 'Account deleted', data: { id: delReq._id, status: delReq.status } });
+      return;
+    }
+
+    // reject → restore account + in-app notification
+    delReq.status = 'rejected';
+    delReq.rejectReason = reason?.trim() || undefined;
+    delReq.reviewedBy = req.admin!._id;
+    delReq.reviewedAt = new Date();
+    await delReq.save();
+    if (user && user.status === 'pending_delete') {
+      user.status = 'active';
+      await user.save();
+    }
+    if (user) {
+      notify({
+        userId: user._id,
+        type: 'system',
+        title: 'Deletion request rejected',
+        body: reason ? `Reason: ${reason}` : 'Your account deletion request was rejected. Your account remains active.',
+        data: { deletionRequest: 'rejected' },
+      });
+    }
+    res.json({ success: true, message: 'Request rejected', data: { id: delReq._id, status: delReq.status } });
   })
 );
 
