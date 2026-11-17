@@ -90,11 +90,26 @@ function otpMatches(storedHash: string, code: string): boolean {
 }
 
 function otpEmailHtml(code: string): string {
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
-  <h2 style="color:#0A1540;margin:0 0 4px;font-size:20px">Dream Ads Admin</h2>
-  <p style="color:#374151;font-size:14px;margin:8px 0">Use this code to reset your password:</p>
-  <p style="font-size:30px;letter-spacing:10px;font-weight:bold;color:#2563EB;text-align:center;background:#f1f5f9;padding:14px;border-radius:8px;margin:12px 0">${code}</p>
-  <p style="color:#6b7280;font-size:12px;margin-top:14px">Valid for ${OTP_TTL_MIN} minutes. If you didn't request this, you can safely ignore this email.</p>
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">
+  <div style="background:#0A1540;padding:22px 24px;text-align:center">
+    <div style="display:inline-block;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);border-radius:999px;padding:6px 16px;font-size:10px;font-weight:bold;letter-spacing:2px;color:#ffffff">ADMINISTRATIVE SECURITY VERIFICATION</div>
+    <div style="color:#ffffff;font-size:16px;font-weight:bold;letter-spacing:1.5px;margin-top:14px">DREAM ADS MULTI SOLUTIONS PVT LTD</div>
+  </div>
+  <div style="padding:26px 24px">
+    <div style="font-size:18px;font-weight:bold;color:#0A1540;margin:0 0 14px">Admin Verification Email</div>
+    <div style="font-size:14px;color:#374151;margin:0 0 8px">Dear Administrator,</div>
+    <div style="font-size:14px;color:#374151;line-height:1.65;margin:0 0 18px">A secure administrative action or login verification has been requested for your <b>DREAM ADS MULTI SOLUTIONS PVT LTD</b> control panel. Please enter the verification code below to authorize this session.</div>
+    <div style="border:1.5px dashed #93c5fd;background:#eff6ff;border-radius:10px;padding:18px 16px;text-align:center;margin:0 0 16px">
+      <div style="font-size:10px;font-weight:bold;letter-spacing:2.5px;color:#64748b;text-transform:uppercase;margin-bottom:10px">One-Time Verification Code</div>
+      <div style="font-size:34px;font-weight:bold;letter-spacing:10px;color:#2563EB">${code}</div>
+    </div>
+    <div style="font-size:12.5px;color:#6b7280;line-height:1.6;margin:0">This verification code is valid for <b>${OTP_TTL_MIN} minutes</b> and can be used only once. For your security, never share this OTP with anyone, including company representatives.</div>
+  </div>
+  <div style="border-top:1px solid #e5e7eb;background:#f9fafb;padding:18px 24px;text-align:center">
+    <div style="font-size:12.5px;color:#6b7280;margin:0 0 6px">Need assistance? Contact our official support team at <a href="mailto:noreply@dreamads.in" style="color:#2563EB;font-weight:bold;text-decoration:none">noreply@dreamads.in</a></div>
+    <div style="font-size:11.5px;color:#9ca3af;margin:0 0 4px">&copy; 2026 DREAM ADS MULTI SOLUTIONS PVT LTD. All rights reserved.</div>
+    <div style="font-size:11.5px;color:#9ca3af;margin:0">This is an automated security notification. Please do not reply directly to this email.</div>
+  </div>
 </div>`;
 }
 

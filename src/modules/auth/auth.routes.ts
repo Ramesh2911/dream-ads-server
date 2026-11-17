@@ -43,17 +43,44 @@ function otpMatches(storedHash: string, code: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function otpEmailHtml(code: string, heading: string): string {
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
-  <h2 style="color:#0A1540;margin:0 0 4px;font-size:20px">Dream Ads</h2>
-  <p style="color:#374151;font-size:14px;margin:8px 0">${heading}</p>
-  <p style="font-size:30px;letter-spacing:10px;font-weight:bold;color:#2563EB;text-align:center;background:#f1f5f9;padding:14px;border-radius:8px;margin:12px 0">${code}</p>
-  <p style="color:#6b7280;font-size:12px;margin-top:14px">Valid for ${OTP_TTL_MIN} minutes. If you didn't request this, you can safely ignore this email.</p>
+function otpEmailHtml(code: string, flow: OtpPurpose): string {
+  const copy =
+    flow === 'register'
+      ? {
+          badge: 'EMAIL VERIFICATION',
+          title: 'Email Verification',
+          para: 'An account verification request has been received for <b>DREAM ADS MULTI SOLUTIONS PVT LTD</b>. Please enter the verification code below to verify your email address and create your account.',
+        }
+      : {
+          badge: 'PASSWORD RESET VERIFICATION',
+          title: 'Password Reset Code',
+          para: 'A password reset request has been received for your <b>DREAM ADS MULTI SOLUTIONS PVT LTD</b> account. Please enter the verification code below to reset your password.',
+        };
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">
+  <div style="background:#0A1540;padding:22px 24px;text-align:center">
+    <div style="display:inline-block;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);border-radius:999px;padding:6px 16px;font-size:10px;font-weight:bold;letter-spacing:2px;color:#ffffff">${copy.badge}</div>
+    <div style="color:#ffffff;font-size:16px;font-weight:bold;letter-spacing:1.5px;margin-top:14px">DREAM ADS MULTI SOLUTIONS PVT LTD</div>
+  </div>
+  <div style="padding:26px 24px">
+    <div style="font-size:18px;font-weight:bold;color:#0A1540;margin:0 0 14px">${copy.title}</div>
+    <div style="font-size:14px;color:#374151;margin:0 0 8px">Dear User,</div>
+    <div style="font-size:14px;color:#374151;line-height:1.65;margin:0 0 18px">${copy.para}</div>
+    <div style="border:1.5px dashed #93c5fd;background:#eff6ff;border-radius:10px;padding:18px 16px;text-align:center;margin:0 0 16px">
+      <div style="font-size:10px;font-weight:bold;letter-spacing:2.5px;color:#64748b;text-transform:uppercase;margin-bottom:10px">One-Time Verification Code</div>
+      <div style="font-size:34px;font-weight:bold;letter-spacing:10px;color:#2563EB">${code}</div>
+    </div>
+    <div style="font-size:12.5px;color:#6b7280;line-height:1.6;margin:0">This verification code is valid for <b>${OTP_TTL_MIN} minutes</b> and can be used only once. For your security, never share this OTP with anyone, including company representatives.</div>
+  </div>
+  <div style="border-top:1px solid #e5e7eb;background:#f9fafb;padding:18px 24px;text-align:center">
+    <div style="font-size:12.5px;color:#6b7280;margin:0 0 6px">Need assistance? Contact our official support team at <a href="mailto:noreply@dreamads.in" style="color:#2563EB;font-weight:bold;text-decoration:none">noreply@dreamads.in</a></div>
+    <div style="font-size:11.5px;color:#9ca3af;margin:0 0 4px">&copy; 2026 DREAM ADS MULTI SOLUTIONS PVT LTD. All rights reserved.</div>
+    <div style="font-size:11.5px;color:#9ca3af;margin:0">This is an automated security notification. Please do not reply directly to this email.</div>
+  </div>
 </div>`;
 }
 
 /** Create (replacing older codes) and email an OTP. Throws ApiError(502) when mail fails. */
-async function issueOtp(email: string, purpose: OtpPurpose, heading: string): Promise<void> {
+async function issueOtp(email: string, purpose: OtpPurpose): Promise<void> {
   const code = String(randomInt(100000, 1000000));
   await UserOtp.deleteMany({ email, purpose });
   await UserOtp.create({
@@ -63,7 +90,7 @@ async function issueOtp(email: string, purpose: OtpPurpose, heading: string): Pr
     expiresAt: new Date(Date.now() + OTP_TTL_MIN * 60 * 1000),
   });
   try {
-    await sendMail({ to: email, subject: `Your verification code — Dream Ads`, html: otpEmailHtml(code, heading) });
+    await sendMail({ to: email, subject: `Your verification code — Dream Ads`, html: otpEmailHtml(code, purpose) });
   } catch (err) {
     logger.error({ err }, 'otp: email failed to send');
     throw new ApiError(502, 'Could not send OTP email — try again later');
@@ -163,7 +190,7 @@ router.post(
     if (data.referralCode && !(await User.findOne({ referralCode: data.referralCode })))
       throw new ApiError(400, 'Invalid referral code');
 
-    await issueOtp(data.email.toLowerCase(), 'register', 'Use this code to verify your email and create your account:');
+    await issueOtp(data.email.toLowerCase(), 'register');
     res.json({ success: true, message: `OTP sent to ${data.email} — valid for ${OTP_TTL_MIN} minutes` });
   })
 );
@@ -271,7 +298,7 @@ router.post(
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
     const user = await User.findOne({ email });
     if (user && user.status !== 'deleted') {
-      await issueOtp(email.toLowerCase(), 'reset', 'Use this code to reset your password:');
+      await issueOtp(email.toLowerCase(), 'reset');
     }
     // Generic response whether or not the email exists (anti-enumeration)
     res.json({ success: true, message: `If this email is registered, a ${OTP_TTL_MIN}-minute OTP has been sent` });
