@@ -4,16 +4,88 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomInt, createHash, timingSafeEqual } from 'crypto';
+import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { User } from '../../models/User';
+import { UserOtp, OtpPurpose } from '../../models/UserOtp';
 import { Wallet } from '../../models/Wallet';
 import { env } from '../../config/env';
+import { logger } from '../../utils/logger';
+import { sendMail } from '../../services/mailer.service';
 import { asyncHandler, ApiError } from '../../middleware/error';
 import { requireUserAuth, signAccessToken, signRefreshToken } from '../../middleware/auth';
 import { getBalances } from '../../services/ledger.service';
 import { notify } from '../../services/notify.service';
 
 const router = Router();
+
+// ---- Email OTP (register verification + forgot password) ----
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts — try again after 15 minutes' },
+});
+
+const OTP_TTL_MIN = 10;
+const OTP_MAX_ATTEMPTS = 5;
+
+function hashOtp(code: string): string {
+  return createHash('sha256').update(code).digest('hex');
+}
+
+function otpMatches(storedHash: string, code: string): boolean {
+  const a = Buffer.from(storedHash, 'hex');
+  const b = Buffer.from(hashOtp(code), 'hex');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function otpEmailHtml(code: string, heading: string): string {
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px">
+  <h2 style="color:#0A1540;margin:0 0 4px;font-size:20px">Dream Ads</h2>
+  <p style="color:#374151;font-size:14px;margin:8px 0">${heading}</p>
+  <p style="font-size:30px;letter-spacing:10px;font-weight:bold;color:#2563EB;text-align:center;background:#f1f5f9;padding:14px;border-radius:8px;margin:12px 0">${code}</p>
+  <p style="color:#6b7280;font-size:12px;margin-top:14px">Valid for ${OTP_TTL_MIN} minutes. If you didn't request this, you can safely ignore this email.</p>
+</div>`;
+}
+
+/** Create (replacing older codes) and email an OTP. Throws ApiError(502) when mail fails. */
+async function issueOtp(email: string, purpose: OtpPurpose, heading: string): Promise<void> {
+  const code = String(randomInt(100000, 1000000));
+  await UserOtp.deleteMany({ email, purpose });
+  await UserOtp.create({
+    email,
+    purpose,
+    codeHash: hashOtp(code),
+    expiresAt: new Date(Date.now() + OTP_TTL_MIN * 60 * 1000),
+  });
+  try {
+    await sendMail({ to: email, subject: `Your verification code — Dream Ads`, html: otpEmailHtml(code, heading) });
+  } catch (err) {
+    logger.error({ err }, 'otp: email failed to send');
+    throw new ApiError(502, 'Could not send OTP email — try again later');
+  }
+}
+
+/** Validate an OTP without consuming it. Throws ApiError(400) on expiry/limits/mismatch. */
+async function checkOtp(email: string, purpose: OtpPurpose, otp: string): Promise<void> {
+  const record = await UserOtp.findOne({ email, purpose }).sort({ createdAt: -1 });
+  if (!record || record.expiresAt.getTime() < Date.now()) {
+    await UserOtp.deleteMany({ email, purpose });
+    throw new ApiError(400, 'OTP expired — request a new one');
+  }
+  if (record.attempts >= OTP_MAX_ATTEMPTS) {
+    await UserOtp.deleteMany({ email, purpose });
+    throw new ApiError(400, 'Too many attempts — request a new OTP');
+  }
+  if (!otpMatches(record.codeHash, otp)) {
+    record.attempts += 1;
+    await record.save();
+    throw new ApiError(400, 'Invalid OTP');
+  }
+}
 
 const registerSchema = z.object({
   name: z.string().min(2),
@@ -77,10 +149,32 @@ function removeProfileFile(filename?: string) {
   }
 }
 
+// ---- Register step 1: validate form + send email OTP (account created only after OTP verify) ----
 router.post(
-  '/register',
+  '/register/request-otp',
+  otpLimiter,
   asyncHandler(async (req: Request, res) => {
     const data = registerSchema.parse(req.body);
+    if (data.email && (await User.findOne({ email: data.email })))
+      throw new ApiError(409, 'Email already registered');
+    if (data.mobile && (await User.findOne({ mobile: data.mobile })))
+      throw new ApiError(409, 'Mobile already registered');
+    if (data.referralCode && !(await User.findOne({ referralCode: data.referralCode })))
+      throw new ApiError(400, 'Invalid referral code');
+
+    await issueOtp(data.email.toLowerCase(), 'register', 'Use this code to verify your email and create your account:');
+    res.json({ success: true, message: `OTP sent to ${data.email} — valid for ${OTP_TTL_MIN} minutes` });
+  })
+);
+
+router.post(
+  '/register',
+  otpLimiter,
+  asyncHandler(async (req: Request, res) => {
+    const data = registerSchema
+      .extend({ otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits') })
+      .parse(req.body);
+    await checkOtp(data.email.toLowerCase(), 'register', data.otp);
     if (data.email && (await User.findOne({ email: data.email })))
       throw new ApiError(409, 'Email already registered');
     if (data.mobile && (await User.findOne({ mobile: data.mobile })))
@@ -105,6 +199,7 @@ router.post(
       isAgeVerified: data.dob ? true : false,
       termsAcceptedAt: data.acceptTerms ? new Date() : undefined,
     });
+    await UserOtp.deleteMany({ email: data.email.toLowerCase(), purpose: 'register' });
 
     await Wallet.create([
       { user: user._id, wallet: 'video', balance: 0 },
@@ -163,6 +258,58 @@ router.post(
         tokens: { access, refresh },
       },
     });
+  })
+);
+
+// ---- Forgot password (email OTP → verify → reset) ----
+router.post(
+  '/forgot-password',
+  otpLimiter,
+  asyncHandler(async (req: Request, res) => {
+    const { email } = z.object({ email: z.string().email() }).parse(req.body);
+    const user = await User.findOne({ email });
+    if (user && user.status !== 'deleted') {
+      await issueOtp(email.toLowerCase(), 'reset', 'Use this code to reset your password:');
+    }
+    // Generic response whether or not the email exists (anti-enumeration)
+    res.json({ success: true, message: `If this email is registered, a ${OTP_TTL_MIN}-minute OTP has been sent` });
+  })
+);
+
+router.post(
+  '/forgot-password/verify',
+  otpLimiter,
+  asyncHandler(async (req: Request, res) => {
+    const data = z
+      .object({
+        email: z.string().email(),
+        otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+      })
+      .parse(req.body);
+    await checkOtp(data.email.toLowerCase(), 'reset', data.otp);
+    res.json({ success: true, message: 'OTP verified — set your new password' });
+  })
+);
+
+router.post(
+  '/forgot-password/reset',
+  otpLimiter,
+  asyncHandler(async (req: Request, res) => {
+    const data = z
+      .object({
+        email: z.string().email(),
+        otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+        newPassword: z.string().min(6, 'New password must be at least 6 characters').max(100),
+      })
+      .parse(req.body);
+    const email = data.email.toLowerCase();
+    await checkOtp(email, 'reset', data.otp);
+    const user = await User.findOne({ email: data.email });
+    if (!user || user.status === 'deleted') throw new ApiError(400, 'Invalid request');
+    user.password = await bcrypt.hash(data.newPassword, 10);
+    await user.save();
+    await UserOtp.deleteMany({ email, purpose: 'reset' });
+    res.json({ success: true, message: 'Password updated — sign in with your new password' });
   })
 );
 
