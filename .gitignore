@@ -1,5 +1,4 @@
 node_modules/
-.env
 .env.example
 *.log
 .DS_Store
@@ -8,3 +7,4 @@ dist/
 uploads/
 deploy.tgz
 pkg/
+config.bat

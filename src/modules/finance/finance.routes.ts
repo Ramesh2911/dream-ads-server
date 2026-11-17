@@ -58,7 +58,7 @@ function handleMembershipUpload(req: Request, res: Response, next: NextFunction)
 }
 
 async function getMembershipConfig() {
-  const keys = ['activationFee', 'upiQr', 'usdtQr', 'usdtAddress', 'usdtMin'];
+  const keys = ['activationFee', 'upiQr', 'usdtQr', 'usdtAddress', 'usdtMin', 'upiId'];
   const rows = await Setting.find({ key: { $in: keys } }).lean();
   const map: Record<string, unknown> = {};
   rows.forEach((r) => (map[r.key] = r.value));
@@ -68,6 +68,7 @@ async function getMembershipConfig() {
     upiQr: typeof map.upiQr === 'string' && map.upiQr ? map.upiQr : '',
     usdtQr: typeof map.usdtQr === 'string' && map.usdtQr ? map.usdtQr : '',
     usdtAddress: typeof map.usdtAddress === 'string' ? map.usdtAddress : '',
+    upiId: typeof map.upiId === 'string' ? map.upiId : '',
   };
 }
 
@@ -86,6 +87,7 @@ router.get(
         upiQr: cfg.upiQr ? `/api/finance/membership/qr/upi` : '',
         usdtQr: cfg.usdtQr ? `/api/finance/membership/qr/usdt` : '',
         usdtAddress: cfg.usdtAddress,
+        upiId: cfg.upiId,
         status: (user as unknown as { membershipStatus?: string }).membershipStatus ?? 'none',
         activeAt: (user as unknown as { membershipActiveAt?: Date }).membershipActiveAt ?? null,
         latestRequest: latestRequest
