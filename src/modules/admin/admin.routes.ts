@@ -2729,6 +2729,7 @@ const settingsSchema = z
     upiQr: z.string().max(120).optional(),
     usdtQr: z.string().max(120).optional(),
     usdtAddress: z.string().max(120).optional(),
+    upiId: z.string().trim().max(60).optional(),
     usdtMin: z.coerce.number().min(0).max(1_000_000).optional(),
     socialLinks: z
       .array(
