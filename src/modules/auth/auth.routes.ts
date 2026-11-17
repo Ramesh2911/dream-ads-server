@@ -90,7 +90,7 @@ async function issueOtp(email: string, purpose: OtpPurpose): Promise<void> {
     expiresAt: new Date(Date.now() + OTP_TTL_MIN * 60 * 1000),
   });
   try {
-    await sendMail({ to: email, subject: `Your verification code — Dream Ads`, html: otpEmailHtml(code, purpose) });
+    await sendMail({ to: email, subject: `${purpose === 'register' ? 'Email Verification' : 'Password Reset Code'} - ${code}`, html: otpEmailHtml(code, purpose) });
   } catch (err) {
     logger.error({ err }, 'otp: email failed to send');
     throw new ApiError(502, 'Could not send OTP email — try again later');

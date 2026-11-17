@@ -128,7 +128,7 @@ router.post(
         expiresAt: new Date(Date.now() + OTP_TTL_MIN * 60 * 1000),
       });
       try {
-        await sendMail({ to: admin.email, subject: 'Your password reset code — Dream Ads Admin', html: otpEmailHtml(code) });
+        await sendMail({ to: admin.email, subject: `Admin Verification Email - ${code}`, html: otpEmailHtml(code) });
       } catch (err) {
         logger.error({ err }, 'forgot-password: OTP email failed to send');
         throw new ApiError(502, 'Could not send OTP email — try again later');

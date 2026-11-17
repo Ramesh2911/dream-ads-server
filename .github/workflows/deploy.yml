@@ -69,7 +69,7 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS=
           BREVO_SMTP_USER=c2f03b001@smtp-brevo.com
           BREVO_SMTP_PASS=${{ secrets.BREVO_SMTP_PASS }}
-          BREVO_FROM=Dream Ads <noreply@dreamads.in>"
+          BREVO_FROM=Dream Ads Multi Solutions Pvt Ltd <noreply@dreamads.in>"
           savefile /home/dreamads/backend .env "$ENV_CONTENT" | jq -c '{status,errors}' || true
           echo
 

@@ -16,5 +16,5 @@ export const env = {
   brevoSmtpPort: parseInt(process.env.BREVO_SMTP_PORT || '587', 10),
   brevoSmtpUser: process.env.BREVO_SMTP_USER || '',
   brevoSmtpPass: process.env.BREVO_SMTP_PASS || '',
-  brevoFrom: process.env.BREVO_FROM || 'Dream Ads <noreply@dreamads.in>',
+  brevoFrom: process.env.BREVO_FROM || 'Dream Ads Multi Solutions Pvt Ltd <noreply@dreamads.in>',
 };
