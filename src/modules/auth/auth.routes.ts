@@ -117,14 +117,14 @@ const ALLOWED_IMAGE = ['image/png', 'image/jpeg', 'image/webp'];
 
 const profileUpload = multer({
   storage: profileStorage,
-  limits: { fileSize: 5 * 1024 * 1024, files: 3 },
+  limits: { fileSize: 5 * 1024 * 1024, files: 4 },
   fileFilter: (_req, file, cb) => {
     if (!ALLOWED_IMAGE.includes(file.mimetype)) return cb(new ApiError(400, 'Image must be PNG, JPG or WEBP'));
     cb(null, true);
   },
 });
 
-const PROFILE_FIELDS = ['avatar', 'aadharFront', 'aadharBack'];
+const PROFILE_FIELDS = ['avatar', 'aadharFront', 'aadharBack', 'livePhoto'];
 
 function handleProfileUpload(req: Request, res: Response, next: NextFunction) {
   const contentType = req.headers['content-type'] || '';
@@ -345,6 +345,7 @@ router.get(
       data: {
         id: u._id, name: u.name, email: u.email, mobile: u.mobile, referralCode: u.referralCode,
         dob: u.dob, avatar: u.avatar, aadharFront: u.aadharFront, aadharBack: u.aadharBack,
+        livePhoto: u.livePhoto ?? null,
         kycDocType: u.kycDocType ?? null,
         status: u.status, kycStatus: u.kycStatus, isAgeVerified: u.isAgeVerified, balances,
         membershipStatus: u.membershipStatus ?? 'none', membershipActiveAt: u.membershipActiveAt ?? null,
@@ -369,6 +370,12 @@ router.put(
       if (avatarFile) {
         removeProfileFile(user.avatar);
         user.avatar = avatarFile.filename;
+      }
+
+      const liveFile = files.livePhoto?.[0];
+      if (liveFile) {
+        removeProfileFile(user.livePhoto);
+        user.livePhoto = liveFile.filename;
       }
 
       let docsChanged = false;
@@ -401,7 +408,7 @@ router.put(
       await user.save();
       res.json({
         success: true,
-        data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
+        data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, livePhoto: user.livePhoto ?? null, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
       });
       return;
     }
@@ -412,7 +419,7 @@ router.put(
     await user.save();
     res.json({
       success: true,
-      data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
+      data: { id: user._id, name: user.name, avatar: user.avatar, aadharFront: user.aadharFront, aadharBack: user.aadharBack, livePhoto: user.livePhoto ?? null, kycDocType: user.kycDocType ?? null, kycStatus: user.kycStatus },
     });
   })
 );
@@ -469,7 +476,7 @@ router.get(
   '/kyc/:kind',
   asyncHandler(async (req: Request, res) => {
     const kind = req.params.kind;
-    if (kind !== 'aadharFront' && kind !== 'aadharBack') throw new ApiError(404, 'File not found');
+    if (kind !== 'aadharFront' && kind !== 'aadharBack' && kind !== 'livePhoto') throw new ApiError(404, 'File not found');
     const token = String(req.query.token || '');
     if (!token) throw new ApiError(401, 'Authentication required');
     let userId: string;
@@ -480,8 +487,8 @@ router.get(
     } catch {
       throw new ApiError(401, 'Authentication required');
     }
-    const user = await User.findById(userId).select('aadharFront aadharBack');
-    const filename = kind === 'aadharFront' ? user?.aadharFront : user?.aadharBack;
+    const user = await User.findById(userId).select('aadharFront aadharBack livePhoto');
+    const filename = kind === 'livePhoto' ? user?.livePhoto : kind === 'aadharFront' ? user?.aadharFront : user?.aadharBack;
     if (!filename) throw new ApiError(404, 'File not found');
     sendProfileFile(res, filename, true);
   })

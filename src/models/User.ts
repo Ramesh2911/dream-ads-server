@@ -10,6 +10,7 @@ export interface IUser extends Document {
   avatar?: string;
   aadharFront?: string;
   aadharBack?: string;
+  livePhoto?: string;
   kycDocType?: 'aadhar' | 'pan' | 'voter';
   referralCode: string;
   referredBy?: mongoose.Types.ObjectId;
@@ -37,6 +38,7 @@ const userSchema = new Schema<IUser>(
     avatar: { type: String },
     aadharFront: { type: String },
     aadharBack: { type: String },
+    livePhoto: { type: String },
     kycDocType: { type: String, enum: ['aadhar', 'pan', 'voter'] },
     referralCode: { type: String, unique: true, required: true },
     referredBy: { type: Schema.Types.ObjectId, ref: 'User' },
